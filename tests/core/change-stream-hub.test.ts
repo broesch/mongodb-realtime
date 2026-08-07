@@ -4,6 +4,7 @@ import { describe, it, expect, afterAll, vi } from 'vitest';
 import { ChangeStreamHub } from '../../src/core/change-stream-hub.js';
 import { ValueSignal } from '../../src/common/signal.js';
 import { startReplSet, stopReplSet, uniqueCollection } from '../helpers/replset.js';
+import { delay, trackNext, expectNoEvent, expectEvent, collectUntil } from '../helpers/timing.js';
 
 // ---------------------------------------------------------------------------
 // These tests drive the hub against a REAL replica set (no fakes/mocks): each
@@ -19,51 +20,6 @@ type LooseChangeDoc = {
 
 const coll = (d: unknown): string | undefined => (d as LooseChangeDoc).ns?.coll;
 const n = (d: unknown): string | number | undefined => (d as LooseChangeDoc).fullDocument?.n;
-
-const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * Wraps an AsyncGenerator so repeated bounded waits (a `Promise.race` against
- * a timeout) can be composed safely. `AsyncGenerator.next()` calls are
- * serialized by the JS engine — a call "abandoned" by a losing `Promise.race`
- * is still pending internally, and a later `next()` call on the same
- * generator queues behind it rather than starting fresh. This tracker keeps
- * at most one in-flight `next()` call and lets every bounded wait
- * (`expectNoEvent`, `expectEvent`, `collectUntil`) share it until it actually
- * resolves, so a timed-out wait never desyncs a subsequent one.
- */
-function trackNext<T>(gen: AsyncGenerator<T>): { next(): Promise<IteratorResult<T>> } {
-    let pending: Promise<IteratorResult<T>> | undefined;
-    return {
-        next(): Promise<IteratorResult<T>> {
-            if (!pending) {
-                const p = gen.next();
-                pending = p;
-                void p.finally(() => {
-                    if (pending === p) pending = undefined;
-                });
-            }
-            return pending;
-        },
-    };
-}
-
-type Tracker<T> = ReturnType<typeof trackNext<T>>;
-
-/** Bounded wait: resolves 'timeout' if no event arrives within `ms`. */
-async function expectNoEvent<T>(tracker: Tracker<T>, ms = 300): Promise<void> {
-    const result = await Promise.race([tracker.next(), delay(ms).then(() => 'timeout' as const)]);
-    if (result === 'timeout') return;
-    throw new Error(`expected no event within ${ms}ms but got: ${JSON.stringify(result)}`);
-}
-
-/** Bounded wait for the next event, so a stuck stream fails fast with a clear message instead of the suite timeout. */
-async function expectEvent<T>(tracker: Tracker<T>, ms = 10_000): Promise<T> {
-    const result = await Promise.race([tracker.next(), delay(ms).then(() => 'timeout' as const)]);
-    if (result === 'timeout') throw new Error(`expected an event within ${ms}ms but none arrived`);
-    if (result.done) throw new Error('generator ended unexpectedly while waiting for an event');
-    return result.value;
-}
 
 /**
  * A DB-level `db.watch()` cursor only sees inserts that happen AFTER it has
@@ -84,22 +40,6 @@ async function waitForStreamOpen(hub: ChangeStreamHub, db: Db, key: string): Pro
         if (result !== 'timeout' && !result.done) return;
     }
     throw new Error('change stream never opened within timeout');
-}
-
-/** Reads events off `tracker` until one matches `predicate`, bounded by `maxEvents` / a per-read timeout. */
-async function collectUntil<T>(
-    tracker: Tracker<T>,
-    predicate: (value: T) => boolean,
-    maxEvents = 5,
-    timeoutMs = 5_000
-): Promise<T> {
-    for (let i = 0; i < maxEvents; i++) {
-        const result = await Promise.race([tracker.next(), delay(timeoutMs).then(() => 'timeout' as const)]);
-        if (result === 'timeout') throw new Error('timed out waiting for expected event');
-        if (result.done) throw new Error('generator ended unexpectedly while waiting for expected event');
-        if (predicate(result.value)) return result.value;
-    }
-    throw new Error(`expected event not seen within ${maxEvents} events`);
 }
 
 describe('ChangeStreamHub', () => {
