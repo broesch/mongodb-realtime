@@ -115,4 +115,15 @@ describe('Fanout', () => {
         // After break the finally block removes the consumer
         expect(fanout.size).toBe(0);
     });
+
+    it('close() resolves a consumer that is already awaiting the next item', async () => {
+        const fanout = new Fanout<number>();
+        const consumer = fanout.consumer();
+        const pending = consumer.next(); // parks the generator at its internal await
+        await new Promise(resolve => setImmediate(resolve)); // let it actually reach the await
+        fanout.close();
+        const result = await pending;
+        expect(result).toEqual({ value: undefined, done: true });
+        expect(fanout.size).toBe(0); // finally block deregistered it
+    });
 });
