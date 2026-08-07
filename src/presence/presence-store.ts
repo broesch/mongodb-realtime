@@ -48,6 +48,13 @@ export class PresenceStore {
     }): Promise<{ isNewConnection: boolean }> {
         // The DB arbitrates new-vs-rejoin: with upsert + returnDocument 'before', exactly one of any
         // set of concurrent racers for the same key observes `null` (fm audit-2026-05-21 B1d).
+        //
+        // includeResultMetadata: false is load-bearing, not cosmetic: the peer range's floor,
+        // mongodb@5.7.0, defaults findOneAndUpdate to returning a `ModifyResult` wrapper
+        // (`{ ok, value, lastErrorObject }`), which is truthy even for a brand-new upsert — so
+        // `before === null` would silently always be false on that floor. The option was added in
+        // exactly 5.7 (hence the floor) to make the direct-document return shape used below
+        // deterministic across the whole declared 5.7–7.x range.
         const before = await this.collection.findOneAndUpdate(
             { userId: entry.userId, clientId: entry.clientId, serverId: this.serverId },
             {
@@ -61,7 +68,7 @@ export class PresenceStore {
                     lastSeen: new Date(),
                 },
             },
-            { upsert: true, returnDocument: 'before' }
+            { upsert: true, returnDocument: 'before', includeResultMetadata: false }
         );
         return { isNewConnection: before === null };
     }
