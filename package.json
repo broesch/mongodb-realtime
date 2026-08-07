@@ -1,0 +1,78 @@
+{
+  "name": "mongodb-realtime",
+  "version": "0.1.0",
+  "description": "MongoDB change-stream realtime infrastructure: resumable subscriptions, per-key watch hubs, presence, and socket.io fan-out — multi-node without Redis",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./presence": {
+      "types": "./dist/presence/index.d.ts",
+      "import": "./dist/presence/index.mjs",
+      "require": "./dist/presence/index.js"
+    },
+    "./socketio": {
+      "types": "./dist/socketio/index.d.ts",
+      "import": "./dist/socketio/index.mjs",
+      "require": "./dist/socketio/index.js"
+    },
+    "./nestjs": {
+      "types": "./dist/nestjs/index.d.ts",
+      "import": "./dist/nestjs/index.mjs",
+      "require": "./dist/nestjs/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm build"
+  },
+  "peerDependencies": {
+    "@nestjs/common": ">=10 <12",
+    "mongodb": "^5.7.0 || ^6.0.0 || ^7.0.0",
+    "socket.io": "^4.6.0"
+  },
+  "peerDependenciesMeta": {
+    "socket.io": {
+      "optional": true
+    },
+    "@nestjs/common": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@nestjs/common": "^11.1.28",
+    "@types/node": "^26.1.2",
+    "eslint": "^10.8.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "globals": "^17.9.0",
+    "mongodb": "^7.5.0",
+    "mongodb-memory-server": "^11.2.0",
+    "prettier": "^3.9.6",
+    "reflect-metadata": "^0.2.2",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.66.0",
+    "vitest": "^4.1.10"
+  }
+}

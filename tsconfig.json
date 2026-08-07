@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "strict": true, "declaration": true, "skipLibCheck": true, "noEmit": true,
+    "forceConsistentCasingInFileNames": true, "isolatedModules": true,
+    "types": ["node", "vitest/globals"],
+    "ignoreDeprecations": "6.0"
+  },
+  "include": ["src", "tests", "tsup.config.ts", "vitest.config.ts"]
+}
