@@ -192,151 +192,187 @@ export class ChangeStreamSubscription<
         // blip never leaves a healthy stream stuck at a long delay.
         let backoffMs = this.initialBackoffMs;
 
-        while (true) {
-            // Skip opening a watch when scope is empty (e.g. all users disconnected).
-            // Wait for new data or shutdown instead.
-            if (!this._currentData || this._currentData.length === 0) {
-                const result = await Promise.race([this.newDataPromise!, this.shutdownPromise!]);
-                if ('shutdown' in result) return;
-                this.currentData = result.data;
-                this.subscribeToNewData();
-                continue;
-            }
+        // Tracks the currently-open driver change stream (if any), so the outer
+        // `finally` below can close it on ANY exit from the loop — including an
+        // external `.return()`/`.throw()` fired on THIS generator while it's
+        // suspended at the `yield` further down (e.g. a consumer like
+        // `mergeAsyncGenerators` tearing down early). That path forces a return
+        // completion right at the yield, which unwinds straight through the inner
+        // `finally` below (a no-op there, since `restartedDueToError` is false on
+        // the happy path) without ever reaching the shutdown/new-data/error
+        // branches that close explicitly — so without this, the driver cursor
+        // would leak. Every branch that already closes the stream explicitly
+        // clears this back to `undefined` right after, so the outer `finally`
+        // below never double-closes.
+        let openStream: ChangeStream<Document, TChange> | undefined;
 
-            // Choose the resume point for this (re)open. `startAfter`/`resumeAfter`
-            // and `startAtOperationTime` are mutually exclusive — pass exactly one.
-            //   - resumeToken set (≥1 event yielded): resume right after it.
-            //   - else, T0 captured from a prior open: start at that cluster time so
-            //     changes since the original open are not missed even if the very
-            //     first `next()` rejected before any token existed.
-            //   - else (first ever open): a fresh `{}` watch.
-            const openedFromOperationTime = !this.resumeToken && this.startAtOperationTime !== undefined;
-            const changesStream = this.changeStreamFactory(
-                this._currentData,
-                this.resumeToken
-                    ? { startAfter: this.resumeToken }
-                    : this.startAtOperationTime
-                      ? { startAtOperationTime: this.startAtOperationTime }
-                      : {}
-            );
-            // Capture the cluster operation time right after opening so that if this
-            // stream errors before yielding anything (no resumeToken yet), the next
-            // reopen can resume from here. The [open, capture] window is a single
-            // `hello` round-trip and is covered by the live stream itself; a tiny
-            // overlap is harmless (change streams are at-least-once on resume).
-            await this.captureOperationTime(changesStream);
-            let restartedDueToError = false;
-            try {
-                let result: TChange | { newData: true; data: TScope[] } | { shutdown: true } | undefined;
-                while (true) {
-                    try {
-                        result = await Promise.race([
-                            changesStream.next(),
-                            this.newDataPromise!,
-                            this.shutdownPromise!,
-                        ]);
-                    } catch (err) {
-                        // Permanent deployment fault (not a replica set, config DB): no
-                        // reopen can ever succeed, so retrying just spins silently at the
-                        // backoff rate. Rethrow so the consumer's bootstrap `.catch` logs a
-                        // named error and the operator learns realtime is dead. Closed
-                        // here because the `finally` below only closes on the retry path.
-                        if (isFatalChangeStreamError(err)) {
-                            this.logger.error(`Fatal change stream error, not retrying: ${(err as Error).message}`);
-                            await this.safeClose(changesStream);
-                            throw err;
-                        }
+        try {
+            while (true) {
+                // Skip opening a watch when scope is empty (e.g. all users disconnected).
+                // Wait for new data or shutdown instead.
+                if (!this._currentData || this._currentData.length === 0) {
+                    const result = await Promise.race([this.newDataPromise!, this.shutdownPromise!]);
+                    if ('shutdown' in result) return;
+                    this.currentData = result.data;
+                    this.subscribeToNewData();
+                    continue;
+                }
 
-                        // The resume point itself is unusable (token aged out of the oplog,
-                        // pre-image expired). Reopening from it is guaranteed to fail the
-                        // same way every time — a poison resume point the plain retry path
-                        // below would replay forever without making progress. Drop it so
-                        // the reopen degrades to a fresh `{}` watch: the gap is lost
-                        // (Mongo no longer has it) but realtime keeps working.
-                        if (isUnresumableChangeStreamError(err)) {
-                            this.logger.warn(
-                                `Change stream resume point is no longer usable; restarting from now — changes during the gap were not delivered: ${(err as Error).message}`
-                            );
-                            this.resumeToken = undefined;
-                            this.startAtOperationTime = undefined;
+                // Choose the resume point for this (re)open. `startAfter`/`resumeAfter`
+                // and `startAtOperationTime` are mutually exclusive — pass exactly one.
+                //   - resumeToken set (≥1 event yielded): resume right after it.
+                //   - else, T0 captured from a prior open: start at that cluster time so
+                //     changes since the original open are not missed even if the very
+                //     first `next()` rejected before any token existed.
+                //   - else (first ever open): a fresh `{}` watch.
+                const openedFromOperationTime = !this.resumeToken && this.startAtOperationTime !== undefined;
+                const changesStream = this.changeStreamFactory(
+                    this._currentData,
+                    this.resumeToken
+                        ? { startAfter: this.resumeToken }
+                        : this.startAtOperationTime
+                          ? { startAtOperationTime: this.startAtOperationTime }
+                          : {}
+                );
+                openStream = changesStream;
+                // Capture the cluster operation time right after opening so that if this
+                // stream errors before yielding anything (no resumeToken yet), the next
+                // reopen can resume from here. The [open, capture] window is a single
+                // `hello` round-trip and is covered by the live stream itself; a tiny
+                // overlap is harmless (change streams are at-least-once on resume).
+                await this.captureOperationTime(changesStream);
+                let restartedDueToError = false;
+                try {
+                    let result: TChange | { newData: true; data: TScope[] } | { shutdown: true } | undefined;
+                    while (true) {
+                        try {
+                            result = await Promise.race([
+                                changesStream.next(),
+                                this.newDataPromise!,
+                                this.shutdownPromise!,
+                            ]);
+                        } catch (err) {
+                            // Permanent deployment fault (not a replica set, config DB): no
+                            // reopen can ever succeed, so retrying just spins silently at the
+                            // backoff rate. Rethrow so the consumer's bootstrap `.catch` logs a
+                            // named error and the operator learns realtime is dead. Closed
+                            // here because the `finally` below only closes on the retry path.
+                            if (isFatalChangeStreamError(err)) {
+                                this.logger.error(`Fatal change stream error, not retrying: ${(err as Error).message}`);
+                                await this.safeClose(changesStream);
+                                openStream = undefined;
+                                throw err;
+                            }
+
+                            // The resume point itself is unusable (token aged out of the oplog,
+                            // pre-image expired). Reopening from it is guaranteed to fail the
+                            // same way every time — a poison resume point the plain retry path
+                            // below would replay forever without making progress. Drop it so
+                            // the reopen degrades to a fresh `{}` watch: the gap is lost
+                            // (Mongo no longer has it) but realtime keeps working.
+                            if (isUnresumableChangeStreamError(err)) {
+                                this.logger.warn(
+                                    `Change stream resume point is no longer usable; restarting from now — changes during the gap were not delivered: ${(err as Error).message}`
+                                );
+                                this.resumeToken = undefined;
+                                this.startAtOperationTime = undefined;
+                                restartedDueToError = true;
+                                break;
+                            }
+
+                            // Transient driver / network error. We rebuild the watch and pick
+                            // up where we left off:
+                            //   - if ≥1 event was yielded, `resumeToken` is set and the reopen
+                            //     resumes right after it (no events lost);
+                            //   - if NOTHING was yielded yet, `resumeToken` is still undefined,
+                            //     so the reopen uses `startAtOperationTime` (T0, captured at
+                            //     open) to cover changes since the original open — closing the
+                            //     first-event gap that a bare `{}` reopen would have left.
+                            if (this.resumeToken) {
+                                this.logger.warn(
+                                    `Change stream errored, will resume from token: ${(err as Error).message}`
+                                );
+                            } else if (openedFromOperationTime) {
+                                // This stream was itself opened from a captured operation time
+                                // and still failed before yielding anything. T0 may have aged
+                                // past the oplog window (same failure class as a stale resume
+                                // token). Drop it so the next reopen degrades to a fresh `{}`
+                                // watch rather than retrying an un-resumable time forever.
+                                this.logger.warn(
+                                    `Change stream re-opened from operation time still errored before any event; dropping it and reopening fresh: ${(err as Error).message}`
+                                );
+                                this.startAtOperationTime = undefined;
+                            } else if (this.startAtOperationTime) {
+                                this.logger.warn(
+                                    `Change stream errored before any event, will resume from captured operation time: ${(err as Error).message}`
+                                );
+                            } else {
+                                this.logger.warn(
+                                    `Change stream errored before any event and no operation time was captured, reopening fresh: ${(err as Error).message}`
+                                );
+                            }
                             restartedDueToError = true;
                             break;
                         }
-
-                        // Transient driver / network error. We rebuild the watch and pick
-                        // up where we left off:
-                        //   - if ≥1 event was yielded, `resumeToken` is set and the reopen
-                        //     resumes right after it (no events lost);
-                        //   - if NOTHING was yielded yet, `resumeToken` is still undefined,
-                        //     so the reopen uses `startAtOperationTime` (T0, captured at
-                        //     open) to cover changes since the original open — closing the
-                        //     first-event gap that a bare `{}` reopen would have left.
-                        if (this.resumeToken) {
-                            this.logger.warn(
-                                `Change stream errored, will resume from token: ${(err as Error).message}`
-                            );
-                        } else if (openedFromOperationTime) {
-                            // This stream was itself opened from a captured operation time
-                            // and still failed before yielding anything. T0 may have aged
-                            // past the oplog window (same failure class as a stale resume
-                            // token). Drop it so the next reopen degrades to a fresh `{}`
-                            // watch rather than retrying an un-resumable time forever.
-                            this.logger.warn(
-                                `Change stream re-opened from operation time still errored before any event; dropping it and reopening fresh: ${(err as Error).message}`
-                            );
-                            this.startAtOperationTime = undefined;
-                        } else if (this.startAtOperationTime) {
-                            this.logger.warn(
-                                `Change stream errored before any event, will resume from captured operation time: ${(err as Error).message}`
-                            );
-                        } else {
-                            this.logger.warn(
-                                `Change stream errored before any event and no operation time was captured, reopening fresh: ${(err as Error).message}`
-                            );
+                        if (!result) break;
+                        this.logger.debug(`Change stream result: ${JSON.stringify(result)}`);
+                        if ('shutdown' in result && result.shutdown === true) {
+                            this.logger.log('Shutting down change stream subscription');
+                            await this.safeClose(changesStream);
+                            openStream = undefined;
+                            return;
                         }
-                        restartedDueToError = true;
-                        break;
+                        if ('newData' in result && result.newData) {
+                            this.logger.debug('Detected new data, restarting change stream with new data');
+                            this.currentData = result.data;
+                            this.resumeToken = changesStream.resumeToken ?? this.resumeToken;
+                            await this.safeClose(changesStream);
+                            openStream = undefined;
+                            this.subscribeToNewData();
+                            break;
+                        }
+
+                        this.resumeToken = changesStream.resumeToken ?? this.resumeToken;
+                        // An event made it through: the stream is healthy again, so a later
+                        // blip starts backing off from the bottom rather than from whatever
+                        // ceiling an earlier outage climbed to.
+                        backoffMs = this.initialBackoffMs;
+                        yield result as TChange;
                     }
-                    if (!result) break;
-                    this.logger.debug(`Change stream result: ${JSON.stringify(result)}`);
-                    if ('shutdown' in result && result.shutdown === true) {
-                        this.logger.log('Shutting down change stream subscription');
+                } finally {
+                    if (restartedDueToError) {
                         await this.safeClose(changesStream);
+                        openStream = undefined;
+                    }
+                }
+
+                // Reconnect pause — deliberately OUTSIDE the `finally` so shutdown during
+                // it can `return` without swallowing an in-flight throw. Cancellable, so
+                // raising the ceiling to 30s does not add 30s to SIGTERM; unref'd, so a
+                // pending backoff never holds the process open.
+                if (restartedDueToError) {
+                    const waited = await delayUnlessStopped(backoffMs, this.shutdownPromise!);
+                    backoffMs = Math.min(backoffMs * 2, this.maxBackoffMs);
+                    if (waited === 'stopped') {
+                        this.logger.log(
+                            'Shutdown signalled during reconnect backoff, stopping change stream subscription'
+                        );
                         return;
                     }
-                    if ('newData' in result && result.newData) {
-                        this.logger.debug('Detected new data, restarting change stream with new data');
-                        this.currentData = result.data;
-                        this.resumeToken = changesStream.resumeToken ?? this.resumeToken;
-                        await this.safeClose(changesStream);
-                        this.subscribeToNewData();
-                        break;
-                    }
-
-                    this.resumeToken = changesStream.resumeToken ?? this.resumeToken;
-                    // An event made it through: the stream is healthy again, so a later
-                    // blip starts backing off from the bottom rather than from whatever
-                    // ceiling an earlier outage climbed to.
-                    backoffMs = this.initialBackoffMs;
-                    yield result as TChange;
-                }
-            } finally {
-                if (restartedDueToError) {
-                    await this.safeClose(changesStream);
                 }
             }
-
-            // Reconnect pause — deliberately OUTSIDE the `finally` so shutdown during
-            // it can `return` without swallowing an in-flight throw. Cancellable, so
-            // raising the ceiling to 30s does not add 30s to SIGTERM; unref'd, so a
-            // pending backoff never holds the process open.
-            if (restartedDueToError) {
-                const waited = await delayUnlessStopped(backoffMs, this.shutdownPromise!);
-                backoffMs = Math.min(backoffMs * 2, this.maxBackoffMs);
-                if (waited === 'stopped') {
-                    this.logger.log('Shutdown signalled during reconnect backoff, stopping change stream subscription');
-                    return;
-                }
+        } finally {
+            // Catches the one path nothing above covers: this generator's `.return()`
+            // (or `.throw()`) called externally while suspended at the `yield` above —
+            // e.g. `mergeAsyncGenerators`' teardown firing `.return()` on every source,
+            // including one that's currently parked mid-yield rather than mid-`next()`.
+            // That forces a return/throw completion right at the yield, unwinding
+            // through here without ever passing through the shutdown/new-data/error
+            // branches that already close explicitly (and clear `openStream`) — so
+            // without this, the driver cursor underneath would leak. Idempotent: every
+            // other exit path already closed and cleared `openStream` to `undefined`.
+            if (openStream) {
+                await this.safeClose(openStream);
             }
         }
     }

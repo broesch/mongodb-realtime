@@ -13,12 +13,6 @@ import { enablePrePostImages } from './enable-pre-post-images.js';
 const DEFAULT_INITIAL_BACKOFF_MS = 1_000;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
 
-// A constant non-empty scope so the underlying `ChangeStreamSubscription` (direct
-// mode) keeps its watch open for the lifetime of the process, rather than
-// restarting on scope changes. It is immutable — `.next()` is never called on it —
-// so sharing one module-level instance across every `directLoop` call is safe.
-const SINGLETON_SCOPE = new ValueSignal<number[]>([1]);
-
 export type WatchSource =
     | { hub: ChangeStreamHub; key: string; db: Db; collection: string }
     | {
@@ -186,17 +180,28 @@ async function* hubConsumerLoop<TTenant>(
 
 /**
  * Drive a single change stream directly via `ChangeStreamSubscription`, ported
- * from pactsheet.fm's `watchEntityChanges`. Uses a constant non-empty scope
- * ({@link SINGLETON_SCOPE}) so the watch stays open for the process lifetime —
- * see that constant's comment for why a scope that shrinks/grows is worse.
+ * from pactsheet.fm's `watchEntityChanges`. Uses a constant non-empty scope so
+ * the watch stays open for the process lifetime rather than restarting on
+ * scope changes.
+ *
+ * The scope signal is constructed fresh HERE (not hoisted to a shared
+ * module-level constant) so it is garbage-collected together with the
+ * `ChangeStreamSubscription` that subscribes to it once this generator ends.
+ * `ChangeStreamSubscription` never unsubscribes its own `subscribeToNewData`
+ * listener on normal completion (only on the next scope emission or its own
+ * teardown internals) — a shared constant instance would accumulate one
+ * permanently-retained listener per `directLoop` call for the life of the
+ * process. The signal's value itself is immutable (`.next()` is never called
+ * on it), so a fresh instance per call is cheap and behaves identically.
  */
 async function* directLoop<TTenant>(
     source: DirectSource,
     options: WatchCollectionOptions<TTenant>,
     log: Logger
 ): AsyncGenerator<ChangeStreamDocument<Document>> {
+    const scope = new ValueSignal<number[]>([1]);
     const subscription = new ChangeStreamSubscription<number, ChangeStreamDocument<Document>>(
-        SINGLETON_SCOPE,
+        scope,
         options.shutdown,
         (_scope, resumeOptions) => source.watch(resumeOptions),
         {

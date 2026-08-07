@@ -392,6 +392,44 @@ describe('ChangeStreamSubscription — shutdown while awaiting an event', () => 
     });
 });
 
+describe('ChangeStreamSubscription — external return() while suspended at a yielded event', () => {
+    // No fake timers here: the happy path below involves no error/backoff, so
+    // real (near-instant) timers keep the test simple.
+
+    // Regression guard: a consumer that stops iterating early — e.g.
+    // mergeAsyncGenerators' teardown firing `.return()` on every source, or
+    // any plain `for await...of` `break` — used to leak the underlying driver
+    // cursor. The generator was suspended exactly at the `yield` inside the
+    // happy-path loop (not at shutdown, not mid-reopen), so `.return()`
+    // forced a return completion that unwound straight through the inner
+    // `finally` (a no-op there — `restartedDueToError` is false on this path)
+    // without ever reaching a branch that calls `safeClose`. Fixed by an outer
+    // try/finally tracking the currently-open stream.
+    it('closes the underlying driver stream when the consumer calls .return() (not via shutdown or an error/reopen path)', async () => {
+        const scope = new ValueSignal<string[]>(['org-1']);
+        const shutdown = new ValueSignal<boolean>(false);
+        const stream = makeFakeStream({
+            nextScript: [{ resolve: { operationType: 'insert' } }, { resolve: '__never__' }],
+        });
+        const factory = vi.fn(() => stream.stream as never);
+
+        const sub = new ChangeStreamSubscription<string, never>(scope, shutdown, factory, {
+            name: 'external-return',
+        });
+
+        const iterator = sub[Symbol.asyncIterator]();
+        const first = await iterator.next();
+        expect(first.done).toBe(false);
+        expect(stream.stream.close).not.toHaveBeenCalled();
+
+        // Simulate a consumer stopping early: `.return()` while the generator
+        // is suspended at the `yield`, independent of shutdown/reopen.
+        const returned = await iterator.return(undefined);
+        expect(returned.done).toBe(true);
+        expect(stream.stream.close).toHaveBeenCalledTimes(1);
+    });
+});
+
 // ---------------------------------------------------------------------------
 // Error classification + reconnect backoff.
 //

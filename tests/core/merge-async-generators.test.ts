@@ -2,10 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { mergeAsyncGenerators } from '../../src/core/merge-async-generators.js';
 
 // ---------------------------------------------------------------------------
-// Pure tests — no Mongo, no real timers. Every source is a hand-rolled
-// "controllable" async generator whose items are queued explicitly, so the
-// tests exercise mergeAsyncGenerators' pull/yield/return semantics without
-// racing real I/O or wall-clock delays.
+// Pure tests — no Mongo. Most sources are a hand-rolled "controllable" async
+// generator whose items are queued explicitly, exercising mergeAsyncGenerators'
+// pull/yield/return semantics without racing real I/O or wall-clock delays.
+//
+// The teardown-hazard tests below (consumer `break`, source rejection) instead
+// use REAL `async function*` sources with a genuinely-pending internal `await`
+// — deliberately reproducing the exact condition `controllable()` engineers
+// around (see its doc comment), because that condition is precisely what
+// mergeAsyncGenerators' teardown must not block on.
 // ---------------------------------------------------------------------------
 
 interface Controllable<T> {
@@ -121,6 +126,53 @@ async function nextValue<T>(gen: AsyncGenerator<T>, ms = 2_000): Promise<Iterato
     return result;
 }
 
+/**
+ * A REAL `async function*` that yields the resolution of a single externally-
+ * supplied promise. When that promise is still pending, `.next()` on this
+ * generator is genuinely suspended inside an internal `await` — NOT at a
+ * `yield` — exactly the state a real change-stream cursor is in while waiting
+ * on the next network event, and exactly the state `controllable()` above is
+ * built to avoid. Used only where reproducing that state is the point.
+ */
+async function* realOnceSource<T>(step: Promise<T>): AsyncGenerator<T> {
+    yield await step;
+}
+
+/** Bounded wait: rejects instead of hanging the test if `promise` never settles within `ms`. */
+async function withTimeout<T>(promise: Promise<T>, ms = 1_000): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms — likely a teardown deadlock`)), ms);
+    });
+    try {
+        return await Promise.race([promise, timeout]);
+    } finally {
+        clearTimeout(timer!);
+    }
+}
+
+/**
+ * Wraps a real async generator so tests can assert `.return()` was actually
+ * INVOKED (fire-and-forget teardown calling it) without needing that call to
+ * ever settle — which, for a source parked on a never-resolving promise, it
+ * won't.
+ */
+function trackReturnCalls<T>(gen: AsyncGenerator<T>): { gen: AsyncGenerator<T>; returnCalled(): boolean } {
+    let called = false;
+    const wrapped = {
+        next: () => gen.next(),
+        return: (value?: T) => {
+            called = true;
+            return gen.return(value);
+        },
+        throw: (error?: unknown) => gen.throw(error),
+        [Symbol.asyncIterator]() {
+            return wrapped;
+        },
+    } as unknown as AsyncGenerator<T>;
+    return { gen: wrapped, returnCalled: () => called };
+}
+
 describe('mergeAsyncGenerators', () => {
     it('yields items from multiple sources as they become ready, not in fixed round-robin order', async () => {
         const a = controllable<string>();
@@ -186,42 +238,47 @@ describe('mergeAsyncGenerators', () => {
         expect((await nextValue(merged)).done).toBe(true);
     });
 
-    it('consumer break closes every source via .return()', async () => {
-        const a = controllable<number>();
-        const b = controllable<number>();
-        const merged = mergeAsyncGenerators([a.gen, b.gen]);
+    // -----------------------------------------------------------------------
+    // Teardown-hazard regressions. A real async generator's `.return()` cannot
+    // settle while the generator is suspended inside its own internal `await`
+    // (as opposed to at a `yield`) — that's exactly the state every LOSING
+    // source is in after a `Promise.race` (it has an in-flight `next()` that
+    // hasn't resolved). If mergeAsyncGenerators' teardown ever awaited those
+    // `.return()` calls, both scenarios below would hang forever: a `break`
+    // would never complete, and a rejecting source's error would never reach
+    // the consumer (it has to unwind through the very `finally` that would be
+    // stuck awaiting). Bounded by `withTimeout` so a regression fails fast
+    // with a clear message instead of the suite's 60s default.
+    // -----------------------------------------------------------------------
 
-        a.push(1);
-        for await (const v of merged) {
-            expect(v).toBe(1);
-            break;
-        }
+    it('consumer break completes promptly even though another source has a still-pending next() (real generators)', async () => {
+        const a = realOnceSource(Promise.resolve(1));
+        const bNeverResolves = new Promise<number>(() => undefined); // like a live, still-open change stream
+        const b = trackReturnCalls(realOnceSource(bNeverResolves));
+        const merged = mergeAsyncGenerators([a, b.gen]);
 
-        expect(a.returned()).toBe(true);
-        expect(b.returned()).toBe(true);
+        const consume = (async () => {
+            for await (const v of merged) {
+                expect(v).toBe(1);
+                break;
+            }
+        })();
+
+        await withTimeout(consume, 1_000);
+        // Fire-and-forget teardown still actually fires .return() on B, even
+        // though B's own promise can never settle.
+        expect(b.returnCalled()).toBe(true);
     });
 
-    it('a source rejecting propagates the rejection to the consumer', async () => {
-        const a = controllable<number>();
-        const b = controllable<number>();
-        const merged = mergeAsyncGenerators([a.gen, b.gen]);
+    it('a source rejection propagates to the consumer promptly even though another source has a still-pending next() (real generators)', async () => {
+        const boom = new Error('boom: fatal change-stream error');
+        const a = realOnceSource(Promise.reject(boom));
+        const bNeverResolves = new Promise<number>(() => undefined);
+        const b = trackReturnCalls(realOnceSource(bNeverResolves));
+        const merged = mergeAsyncGenerators([a, b.gen]);
 
-        const boom = new Error('boom');
-        a.fail(boom);
-
-        await expect(merged.next()).rejects.toThrow('boom');
-    });
-
-    it('a source rejecting still closes every source via .return()', async () => {
-        const a = controllable<number>();
-        const b = controllable<number>();
-        const merged = mergeAsyncGenerators([a.gen, b.gen]);
-
-        a.fail(new Error('boom'));
-        await expect(merged.next()).rejects.toThrow('boom');
-
-        expect(a.returned()).toBe(true);
-        expect(b.returned()).toBe(true);
+        await withTimeout(expect(merged.next()).rejects.toThrow('boom'), 1_000);
+        expect(b.returnCalled()).toBe(true);
     });
 
     it('completes immediately with no sources', async () => {
