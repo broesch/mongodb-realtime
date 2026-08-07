@@ -1,5 +1,6 @@
+import { Db as DbClass } from 'mongodb';
 import type { Collection, Db } from 'mongodb';
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import { ChangeStreamHub } from '../../src/core/change-stream-hub.js';
 import { ValueSignal } from '../../src/common/signal.js';
 import { startReplSet, stopReplSet, uniqueCollection } from '../helpers/replset.js';
@@ -263,6 +264,114 @@ describe('ChangeStreamHub', () => {
             // required behavior (delivery resumes and nothing after reconnect is lost).
             const found = await collectUntil(gen, d => n(d) === 'after-reopen');
             expect(n(found)).toBe('after-reopen');
+
+            await hub.close();
+        });
+    });
+
+    describe('reader crash self-heal (evictIfCrashed)', () => {
+        it('evicts a terminally-crashed stream, completing its consumers, and a later subscribe() creates a fresh live stream', async () => {
+            const { db } = await startReplSet();
+            const key = uniqueCollection('crash-key');
+            const collName = uniqueCollection('crash-coll');
+
+            // Fault injection needs a scripted fake here — a healthy real replica
+            // set cannot be made to reject a change-stream read with an arbitrary
+            // fatal error code on demand, and this is exactly the terminal-crash
+            // path (`isFatalChangeStreamError` -> rethrow instead of retry) that a
+            // real deployment can only hit via genuine misconfiguration. Shaped
+            // like change-stream-subscription.test.ts's makeFakeStream: a real
+            // `Db.prototype` `parent` so ChangeStreamSubscription's `instanceof Db`
+            // narrowing in resolveDb() succeeds, and a scripted rejecting `next()`.
+            const fatalError = Object.assign(new Error('$changeStream is only supported on replica sets'), {
+                code: 40573,
+            });
+            const parentDb: Db = Object.create(DbClass.prototype) as Db;
+            (parentDb as unknown as { admin: () => unknown }).admin = () => ({
+                command: vi.fn().mockResolvedValue({}),
+            });
+            const fakeStream = {
+                parent: parentDb,
+                resumeToken: undefined,
+                next: vi.fn().mockRejectedValue(fatalError),
+                close: vi.fn().mockResolvedValue(undefined),
+            };
+            const crashingDb: Db = Object.create(DbClass.prototype) as Db;
+            (crashingDb as unknown as { watch: unknown }).watch = vi.fn().mockReturnValue(fakeStream);
+
+            const hub = new ChangeStreamHub();
+            const gen = hub.subscribe(key, crashingDb, collName);
+
+            // The fatal error terminally throws out of ChangeStreamSubscription's
+            // async generator, killing the hub reader; evictIfCrashed then closes
+            // the stream's fanouts, completing this consumer.
+            const result = await Promise.race([gen.next(), delay(5_000).then(() => 'timeout' as const)]);
+            if (result === 'timeout') {
+                throw new Error("expected the crashed stream's consumer to complete, but it never resolved");
+            }
+            expect(result.done).toBe(true);
+
+            const streams = (hub as unknown as { streams: Map<string, unknown> }).streams;
+            expect(streams.has(key)).toBe(false);
+
+            // A later subscribe() for the SAME key, now against a healthy real db,
+            // must create a fresh stream rather than handing back the dead one.
+            const freshGen = trackNext(hub.subscribe(key, db, collName));
+            // Not immediately done — proves it's a live, freshly-opened stream
+            // (a stale/closed fanout would have resolved with done:true here).
+            await expectNoEvent(freshGen);
+
+            // And it actually works: prime it and confirm a real insert flows.
+            await waitForStreamOpen(hub, db, key);
+            await db.collection(collName).insertOne({ n: 'after-recreate' });
+            const delivered = await expectEvent(freshGen);
+            expect(n(delivered)).toBe('after-recreate');
+
+            expect(streams.has(key)).toBe(true);
+
+            await hub.close();
+        });
+    });
+
+    describe('multi-key isolation', () => {
+        it('two keys on two different databases each deliver only their own events', async () => {
+            const { client, db: dbA } = await startReplSet();
+            const dbB = client.db('test2');
+
+            const keyA = uniqueCollection('multi-key-a');
+            const keyB = uniqueCollection('multi-key-b');
+            const collX = uniqueCollection('multi-x');
+            const collY = uniqueCollection('multi-y');
+
+            const hub = new ChangeStreamHub();
+            const genX = trackNext(hub.subscribe(keyA, dbA, collX));
+            const genY = trackNext(hub.subscribe(keyB, dbB, collY));
+
+            await waitForStreamOpen(hub, dbA, keyA);
+            await waitForStreamOpen(hub, dbB, keyB);
+
+            await dbA.collection(collX).insertOne({ n: 'x1' });
+            await dbB.collection(collY).insertOne({ n: 'y1' });
+
+            const x1 = await expectEvent(genX);
+            expect(n(x1)).toBe('x1');
+            const y1 = await expectEvent(genY);
+            expect(n(y1)).toBe('y1');
+
+            // Causal-ordering trick (as in the ignoreCollections test): each key
+            // has its own independent cursor, so insert again on ONE side and use
+            // the confirmed receipt of that key's own event to anchor the bounded
+            // no-event check on the OTHER key's consumer, rather than racing a
+            // fixed timeout against two unrelated async cursors.
+            await dbA.collection(collX).insertOne({ n: 'x2' });
+            const x2 = await expectEvent(genX);
+            expect(n(x2)).toBe('x2');
+            await expectNoEvent(genY);
+
+            await dbB.collection(collY).insertOne({ n: 'y2' });
+            const y2 = await expectEvent(genY);
+            expect(n(y2)).toBe('y2');
+            await expectNoEvent(genX);
 
             await hub.close();
         });
