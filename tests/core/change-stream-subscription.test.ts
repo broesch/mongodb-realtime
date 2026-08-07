@@ -251,6 +251,55 @@ describe('ChangeStreamSubscription — scope changes', () => {
         await pending;
     });
 
+    // Regression guard: the scope-change reopen path (the `newData` branch) must
+    // carry the resume token forward via `this.resumeToken = changesStream.resumeToken
+    // ?? this.resumeToken` BEFORE closing and reopening — same as the error-retry
+    // path does. This must hold even when no event has been YIELDED yet on the
+    // current open (so the yield-branch's own `this.resumeToken = ...` assignment
+    // hasn't already covered it) — e.g. the driver's change stream can carry a live
+    // `resumeToken` (from the initial aggregate's postBatchResumeToken) before any
+    // document has been read. Without line 310's assignment, a scope change in that
+    // window silently drops back to a fresh `{}` watch, re-delivering or losing the gap.
+    it('a scope change before any event is yielded still carries the stream resumeToken forward', async () => {
+        const scope = new ValueSignal<string[]>(['org-1']);
+        const shutdown = new ValueSignal<boolean>(false);
+        const token = { _data: 'tok1' };
+        const factoryCalls: Array<{ scope: string[]; options: FactoryOptions }> = [];
+
+        // 1st open: never yields an event (so the yield-branch assignment at line
+        // 316 never runs), but the stream already carries a live `resumeToken` —
+        // the scope change below is what ends this stream.
+        const first = makeFakeStream({ nextScript: [{ resolve: '__never__' }], resumeToken: token });
+        const second = makeFakeStream({ nextScript: [{ resolve: '__never__' }] });
+        const streams = [first.stream, second.stream];
+        const factory = vi.fn((s: string[], options: FactoryOptions) => {
+            factoryCalls.push({ scope: s, options });
+            return streams[Math.min(factoryCalls.length - 1, streams.length - 1)] as never;
+        });
+
+        const sub = new ChangeStreamSubscription<string, never>(scope, shutdown, factory as never, {
+            name: 'token-carry',
+        });
+
+        const iterator = sub[Symbol.asyncIterator]();
+        const pending = iterator.next();
+        await vi.advanceTimersByTimeAsync(5);
+        expect(factoryCalls.length).toBe(1);
+        expect(factoryCalls[0].options).toEqual({});
+
+        scope.next(['org-2']); // scope change before any event was ever yielded
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(first.stream.close).toHaveBeenCalled();
+        expect(factoryCalls.length).toBe(2);
+        expect(factoryCalls[1].scope).toEqual(['org-2']);
+        expect(factoryCalls[1].options).toEqual({ startAfter: token });
+
+        shutdown.next(true);
+        await vi.advanceTimersByTimeAsync(10);
+        await pending;
+    });
+
     it('a scope change to [] parks (factory not called again) until scope refills', async () => {
         const scope = new ValueSignal<string[]>(['org-1']);
         const shutdown = new ValueSignal<boolean>(false);
