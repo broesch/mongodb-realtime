@@ -2,6 +2,7 @@ import { vi } from 'vitest';
 import { ChangeStreamHub } from '../../src/core/change-stream-hub.js';
 import { ConnectionRegistry } from '../../src/presence/connection-registry.js';
 import { PresenceStore } from '../../src/presence/presence-store.js';
+import { SocketServerHandle } from '../../src/nestjs/socket-server-handle.js';
 import {
     CHANGE_STREAM_HUB,
     CONNECTION_REGISTRY,
@@ -10,6 +11,7 @@ import {
     RealtimeLifecycle,
     RealtimeModule,
     SERVER_ID,
+    SOCKET_SERVER,
 } from '../../src/nestjs/realtime-module.js';
 import { startReplSet, stopReplSet, uniqueCollection } from '../helpers/replset.js';
 
@@ -206,7 +208,7 @@ describe('RealtimeModule.forRoot', () => {
         expect(hubCloseSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('exports the four tokens plus the lifecycle provider', async () => {
+    it('exports the tokens plus the lifecycle provider', async () => {
         const { db } = await startReplSet();
         const dynamicModule = RealtimeModule.forRoot({
             db,
@@ -216,6 +218,8 @@ describe('RealtimeModule.forRoot', () => {
         expect(dynamicModule.exports).toEqual(
             expect.arrayContaining([
                 SERVER_ID,
+                REALTIME_ENABLED,
+                SOCKET_SERVER,
                 CONNECTION_REGISTRY,
                 PRESENCE_STORE,
                 CHANGE_STREAM_HUB,
@@ -253,6 +257,21 @@ describe('RealtimeModule.forRoot', () => {
 
         await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
     });
+
+    it('provides SOCKET_SERVER as a SocketServerHandle instance', async () => {
+        const { db } = await startReplSet();
+        const dynamicModule = RealtimeModule.forRoot({
+            db,
+            presence: { collectionName: uniqueCollection('presence') },
+        });
+        const resolved = await resolveProviders(dynamicModule.providers as unknown as FactoryProvider[]);
+
+        const handle = resolved.get(SOCKET_SERVER);
+        expect(handle).toBeInstanceOf(SocketServerHandle);
+        expect((handle as SocketServerHandle).isReady()).toBe(false);
+
+        await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
+    });
 });
 
 describe('RealtimeModule.forRootAsync', () => {
@@ -282,6 +301,30 @@ describe('RealtimeModule.forRootAsync', () => {
         const presenceStore = resolved.get(PRESENCE_STORE) as PresenceStore;
         expect(presenceStore).toBeInstanceOf(PresenceStore);
         expect(presenceStore.collection.collectionName).toBe(collectionName);
+
+        await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
+    });
+
+    it('provides SOCKET_SERVER as a SocketServerHandle instance', async () => {
+        const { db } = await startReplSet();
+        const CONFIG_TOKEN = 'FAKE_CONFIG';
+
+        const dynamicModule = RealtimeModule.forRootAsync({
+            inject: [CONFIG_TOKEN],
+            useFactory: (config: { db: typeof db }) => ({
+                db: config.db,
+            }),
+        });
+
+        const providers = [
+            { provide: CONFIG_TOKEN, useFactory: () => ({ db }) },
+            ...(dynamicModule.providers as unknown as FactoryProvider[]),
+        ];
+        const resolved = await resolveProviders(providers);
+
+        const handle = resolved.get(SOCKET_SERVER);
+        expect(handle).toBeInstanceOf(SocketServerHandle);
+        expect((handle as SocketServerHandle).isReady()).toBe(false);
 
         await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
     });

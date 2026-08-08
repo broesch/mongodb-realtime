@@ -7,12 +7,14 @@ import { ChangeStreamHub, type ChangeStreamHubOptions } from '../core/change-str
 import { ConnectionRegistry } from '../presence/connection-registry.js';
 import { PresenceStore } from '../presence/presence-store.js';
 import { DEFAULT_PRESENCE_COLLECTION, type PresenceStoreOptions } from '../presence/types.js';
+import { SocketServerHandle } from './socket-server-handle.js';
 
 export const CHANGE_STREAM_HUB = 'MONGODB_REALTIME_HUB';
 export const PRESENCE_STORE = 'MONGODB_REALTIME_PRESENCE_STORE';
 export const CONNECTION_REGISTRY = 'MONGODB_REALTIME_CONNECTION_REGISTRY';
 export const SERVER_ID = 'MONGODB_REALTIME_SERVER_ID';
 export const REALTIME_ENABLED = 'MONGODB_REALTIME_ENABLED';
+export const SOCKET_SERVER = 'MONGODB_REALTIME_SOCKET_SERVER';
 
 export interface RealtimeModuleOptions {
     db: Db;
@@ -118,6 +120,10 @@ function buildProviders(options: RealtimeModuleOptions): Provider[] {
             useFactory: (): boolean => options.enabled !== false,
         },
         {
+            provide: SOCKET_SERVER,
+            useFactory: (): SocketServerHandle => new SocketServerHandle(),
+        },
+        {
             provide: CONNECTION_REGISTRY,
             useFactory: (): ConnectionRegistry => new ConnectionRegistry(),
         },
@@ -162,6 +168,7 @@ export class RealtimeModule {
             exports: [
                 SERVER_ID,
                 REALTIME_ENABLED,
+                SOCKET_SERVER,
                 CONNECTION_REGISTRY,
                 PRESENCE_STORE,
                 CHANGE_STREAM_HUB,
@@ -193,6 +200,10 @@ export class RealtimeModule {
                     provide: REALTIME_ENABLED,
                     useFactory: (moduleOptions: RealtimeModuleOptions): boolean => moduleOptions.enabled !== false,
                     inject: [OPTIONS_TOKEN],
+                },
+                {
+                    provide: SOCKET_SERVER,
+                    useFactory: (): SocketServerHandle => new SocketServerHandle(),
                 },
                 {
                     provide: CONNECTION_REGISTRY,
@@ -227,6 +238,7 @@ export class RealtimeModule {
             exports: [
                 SERVER_ID,
                 REALTIME_ENABLED,
+                SOCKET_SERVER,
                 CONNECTION_REGISTRY,
                 PRESENCE_STORE,
                 CHANGE_STREAM_HUB,
