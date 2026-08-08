@@ -1,4 +1,26 @@
 import { ChangeStreamEventPusher } from '../../src/nestjs/change-stream-event-pusher.js';
+import type { Logger } from '../../src/common/logger.js';
+import { startReplSet, stopReplSet, uniqueCollection } from '../helpers/replset.js';
+
+interface LogCall {
+    level: 'debug' | 'log' | 'warn' | 'error';
+    message: string;
+}
+
+function mockLogger(): { logger: Logger; calls: LogCall[] } {
+    const calls: LogCall[] = [];
+    return {
+        calls,
+        logger: {
+            debug: message => calls.push({ level: 'debug', message }),
+            log: message => calls.push({ level: 'log', message }),
+            warn: message => calls.push({ level: 'warn', message }),
+            error: message => calls.push({ level: 'error', message }),
+        },
+    };
+}
+
+const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 class OrderlyPusher extends ChangeStreamEventPusher {
     ran = false;
@@ -90,5 +112,103 @@ describe('ChangeStreamEventPusher', () => {
 
         await shutdownPromise;
         expect(resolved).toBe(true);
+    });
+});
+
+describe('ChangeStreamEventPusher — enabled gate and latching', () => {
+    it('never invokes pushChangeEvents when constructed disabled, and shutdown still returns', async () => {
+        let invoked = false;
+        class Pusher extends ChangeStreamEventPusher {
+            protected async pushChangeEvents(): Promise<void> {
+                invoked = true;
+            }
+        }
+        const pusher = new Pusher({ enabled: false });
+
+        pusher.onApplicationBootstrap();
+        await expect(pusher.onApplicationShutdown()).resolves.toBeUndefined();
+        expect(invoked).toBe(false);
+    });
+
+    it('shutdown returns even when the loop resolves without calling loopEnded', async () => {
+        class Pusher extends ChangeStreamEventPusher {
+            protected async pushChangeEvents(): Promise<void> {
+                // Deliberately does NOT call this.loopEnded().
+            }
+        }
+        const pusher = new Pusher();
+
+        pusher.onApplicationBootstrap();
+        await expect(pusher.onApplicationShutdown()).resolves.toBeUndefined();
+    });
+
+    it('logs an error when the loop ends while the app is still running', async () => {
+        const { logger, calls } = mockLogger();
+        class Pusher extends ChangeStreamEventPusher {
+            protected async pushChangeEvents(): Promise<void> {
+                this.markWatching();
+            }
+        }
+        const pusher = new Pusher({ logger });
+
+        pusher.onApplicationBootstrap();
+        await delay(50);
+
+        expect(calls.some(c => c.level === 'error' && c.message.includes('before shutdown was requested'))).toBe(true);
+    });
+
+    it('does not log that error when the loop ends during shutdown', async () => {
+        const { logger, calls } = mockLogger();
+        class Pusher extends ChangeStreamEventPusher {
+            protected async pushChangeEvents(): Promise<void> {
+                this.markWatching();
+                await new Promise<void>(resolve => {
+                    const check = (): void => {
+                        if (this.shutdown.getValue()) resolve();
+                        else setTimeout(check, 5);
+                    };
+                    check();
+                });
+            }
+        }
+        const pusher = new Pusher({ logger });
+
+        pusher.onApplicationBootstrap();
+        await delay(20);
+        await pusher.onApplicationShutdown();
+
+        expect(calls.some(c => c.level === 'error' && c.message.includes('before shutdown was requested'))).toBe(false);
+    });
+});
+
+describe('ChangeStreamEventPusher — watchOne', () => {
+    afterAll(() => stopReplSet());
+
+    it('watchOne opens a stream, delivers each change to the handler, and stops on shutdown', async () => {
+        const { db } = await startReplSet();
+        const name = uniqueCollection('pusher-watch-one');
+        const coll = db.collection(name);
+        const seen: string[] = [];
+
+        class Pusher extends ChangeStreamEventPusher {
+            protected async pushChangeEvents(): Promise<void> {
+                await this.watchOne({
+                    collectionName: name,
+                    watch: resumeOptions => coll.watch([], { fullDocument: 'updateLookup', ...resumeOptions }),
+                    handler: change => {
+                        seen.push(change.operationType);
+                    },
+                });
+            }
+        }
+        const pusher = new Pusher();
+
+        pusher.onApplicationBootstrap();
+        await delay(400);
+        await coll.insertOne({ v: 1 });
+        await delay(400);
+
+        await pusher.onApplicationShutdown();
+        expect(seen).toContain('insert');
     });
 });
