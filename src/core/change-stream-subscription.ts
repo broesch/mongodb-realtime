@@ -165,6 +165,16 @@ export class ChangeStreamSubscription<
 
     private subscribeToShutdown() {
         this.shutdownSubscription?.unsubscribe();
+        // `subscribeToChanges` skips the initial synchronous emission (it only
+        // fires on a false→true transition), so a subscription constructed
+        // AFTER shutdown has already landed would otherwise never see it: the
+        // async iterator only ever races `shutdownPromise`, never polls
+        // `getValue()` directly, so it would hang forever. Short-circuit here
+        // instead — an already-true shutdown resolves immediately.
+        if (this.shutdown.getValue()) {
+            this.shutdownPromise = Promise.resolve({ shutdown: true });
+            return;
+        }
         this.shutdownPromise = new Promise<{ shutdown: true }>(resolve => {
             this.shutdownSubscription = subscribeToChanges(this.shutdown, v => {
                 if (v) {

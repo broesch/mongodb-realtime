@@ -211,4 +211,47 @@ describe('ChangeStreamEventPusher — watchOne', () => {
         await pusher.onApplicationShutdown();
         expect(seen).toContain('insert');
     });
+
+    // Reviewer-reproduced regression: pushChangeEvents awaits something (e.g. a
+    // setup step) BEFORE calling watchOne, and shutdown lands in that window.
+    // Before the fix, a ChangeStreamSubscription constructed after
+    // `shutdown.next(true)` had already landed would never see it —
+    // `subscribeToChanges` skips the initial synchronous emission, so
+    // `shutdownPromise` never resolved and `onApplicationShutdown` hung
+    // forever. `watchOne` now bails out before constructing the subscription
+    // when shutdown has already landed (belt), on top of the core fix in
+    // `ChangeStreamSubscription.subscribeToShutdown` (suspenders).
+    it('onApplicationShutdown resolves promptly when shutdown lands while pushChangeEvents is awaiting something before calling watchOne', async () => {
+        let releaseDeferred!: () => void;
+        const deferred = new Promise<void>(resolve => {
+            releaseDeferred = resolve;
+        });
+        let watchCalled = false;
+
+        class Pusher extends ChangeStreamEventPusher {
+            protected async pushChangeEvents(): Promise<void> {
+                await deferred; // simulate work before the watch is even opened
+                await this.watchOne({
+                    collectionName: 'irrelevant',
+                    watch: (): never => {
+                        watchCalled = true;
+                        throw new Error('watch must not be opened once shutdown has already landed');
+                    },
+                    handler: () => {},
+                });
+            }
+        }
+        const pusher = new Pusher();
+
+        pusher.onApplicationBootstrap();
+        // Signals shutdown synchronously (the `next(true)` call happens before
+        // the first `await` inside onApplicationShutdown) while pushChangeEvents
+        // is still parked on `deferred`, i.e. before watchOne is ever called.
+        const shutdownPromise = pusher.onApplicationShutdown();
+        releaseDeferred(); // let pushChangeEvents proceed into watchOne AFTER shutdown already landed
+
+        const result = await Promise.race([shutdownPromise, delay(1_000).then(() => 'timeout' as const)]);
+        expect(result).not.toBe('timeout');
+        expect(watchCalled).toBe(false);
+    });
 });

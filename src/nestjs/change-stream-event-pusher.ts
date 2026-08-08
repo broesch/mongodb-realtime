@@ -136,6 +136,13 @@ export abstract class ChangeStreamEventPusher implements OnApplicationBootstrap,
         watch: (resumeOptions: ResumeOptions) => ChangeStream<Document, ChangeStreamDocument<Document>>;
         handler: (change: ChangeStreamDocument<Document>) => void | Promise<void>;
     }): Promise<void> {
+        // Belt-and-suspenders: `pushChangeEvents` may `await` something before
+        // calling `watchOne`, and shutdown can land in that window. The core
+        // fix (subscribeToShutdown resolving immediately when already-true)
+        // covers this too, but skip opening a stream at all when we already
+        // know we're shutting down.
+        if (this.shutdown.getValue()) return;
+
         const scope = new ValueSignal<number[]>([1]);
         const subscription = new ChangeStreamSubscription<number, ChangeStreamDocument<Document>>(
             scope,

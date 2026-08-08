@@ -392,6 +392,46 @@ describe('ChangeStreamSubscription — shutdown while awaiting an event', () => 
     });
 });
 
+describe('ChangeStreamSubscription — shutdown already true at construction', () => {
+    // No fake timers: we want a real, bounded race against a genuinely-hanging
+    // scenario, so a regression here fails the test outright instead of
+    // silently passing under an unadvanced fake clock.
+
+    // Regression guard (reviewer-reproduced): `subscribeToShutdown` used
+    // `subscribeToChanges`, which skips the initial synchronous emission and
+    // only fires on a false→true transition. A subscription constructed
+    // AFTER `shutdown.next(true)` had already landed therefore built a
+    // `shutdownPromise` that would never resolve — the async iterator only
+    // ever races that promise, it never polls `getValue()` — so it hung
+    // forever. Reached in production via `watchOne` whenever
+    // `pushChangeEvents` awaits something before calling it, and shutdown
+    // lands in that window.
+    it('the async iterator completes promptly when shutdown is already true, even with a non-empty scope', async () => {
+        const scope = new ValueSignal<number[]>([1]);
+        const shutdown = new ValueSignal<boolean>(true); // already true before construction
+        const stream = makeFakeStream({ nextScript: [{ resolve: '__never__' }] });
+        const factory = vi.fn(() => stream.stream as never);
+
+        const sub = new ChangeStreamSubscription<number, never>(scope, shutdown, factory, {
+            name: 'already-shutdown',
+        });
+
+        const result = await Promise.race([
+            sub[Symbol.asyncIterator]().next(),
+            new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 1_000)),
+        ]);
+
+        expect(result).not.toBe('timeout');
+        expect((result as IteratorResult<never>).done).toBe(true);
+        // The factory may or may not have been called depending on race order
+        // (the non-empty scope path opens a stream before racing shutdown),
+        // but if it was, the stream it returned must have been closed.
+        if (factory.mock.calls.length > 0) {
+            expect(stream.stream.close).toHaveBeenCalled();
+        }
+    });
+});
+
 describe('ChangeStreamSubscription — external return() while suspended at a yielded event', () => {
     // No fake timers here: the happy path below involves no error/backoff, so
     // real (near-instant) timers keep the test simple.
