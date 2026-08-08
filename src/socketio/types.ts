@@ -81,6 +81,15 @@ export interface PushScopedFilteredOptions<TTenant> extends PushScopedOptions<TT
      * once-per-event block and each per-recipient `canReceive` check, so
      * tenant-scoped reads inside those hooks hit the right tenant. Omit it
      * (or `tenantOf`) to run the hooks directly — transition-safe default.
+     *
+     * `ctx.tenant` may be `undefined` even when `runInContext` is supplied:
+     * the once-per-event call always wraps `runOnce` whenever the hook is
+     * present, seeded from `event.tenant` regardless of whether that's
+     * defined, and `tenantOf` returning `undefined` for a given socket has
+     * the same effect on the per-recipient call — the wrap keys on HOOK
+     * PRESENCE, not on the tenant value being defined. Adapters that only
+     * want to enter CLS when there's an actual tenant should check
+     * `ctx.tenant !== undefined` and call `fn()` directly otherwise.
      */
     runInContext?: <R>(ctx: { tenant?: unknown }, fn: () => Promise<R>) => Promise<R>;
     /** Resolves a connected socket's tenant, for seeding its `canReceive` context via `runInContext`. */

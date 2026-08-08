@@ -28,7 +28,12 @@ export interface WatchCollectionOptions<TTenant> {
     tenant?: TTenant;
     name?: string;
     logger?: Logger;
-    /** Hub-consumer reconnect backoff bounds (hub mode only). Defaults 1_000 / 30_000. */
+    /**
+     * Reconnect backoff bounds: govern the hub-consumer self-heal path in hub
+     * mode, and are forwarded to `ChangeStreamSubscription`'s own reopen
+     * backoff in direct mode (`directLoop` passes both through). Defaults
+     * 1_000 / 30_000.
+     */
     initialBackoffMs?: number;
     maxBackoffMs?: number;
 }
