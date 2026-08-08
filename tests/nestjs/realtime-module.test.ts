@@ -6,6 +6,7 @@ import {
     CHANGE_STREAM_HUB,
     CONNECTION_REGISTRY,
     PRESENCE_STORE,
+    REALTIME_ENABLED,
     RealtimeLifecycle,
     RealtimeModule,
     SERVER_ID,
@@ -223,6 +224,33 @@ describe('RealtimeModule.forRoot', () => {
         );
 
         const resolved = await resolveProviders(dynamicModule.providers as unknown as FactoryProvider[]);
+        await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
+    });
+
+    it('provides REALTIME_ENABLED, defaulting to true', async () => {
+        const { db } = await startReplSet();
+        const dynamicModule = RealtimeModule.forRoot({
+            db,
+            presence: { collectionName: uniqueCollection('presence') },
+        });
+        const resolved = await resolveProviders(dynamicModule.providers as unknown as FactoryProvider[]);
+
+        expect(resolved.get(REALTIME_ENABLED)).toBe(true);
+
+        await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
+    });
+
+    it('provides REALTIME_ENABLED as false when disabled', async () => {
+        const { db } = await startReplSet();
+        const dynamicModule = RealtimeModule.forRoot({
+            db,
+            presence: { collectionName: uniqueCollection('presence') },
+            enabled: false,
+        });
+        const resolved = await resolveProviders(dynamicModule.providers as unknown as FactoryProvider[]);
+
+        expect(resolved.get(REALTIME_ENABLED)).toBe(false);
+
         await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
     });
 });

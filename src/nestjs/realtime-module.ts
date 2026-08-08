@@ -12,6 +12,7 @@ export const CHANGE_STREAM_HUB = 'MONGODB_REALTIME_HUB';
 export const PRESENCE_STORE = 'MONGODB_REALTIME_PRESENCE_STORE';
 export const CONNECTION_REGISTRY = 'MONGODB_REALTIME_CONNECTION_REGISTRY';
 export const SERVER_ID = 'MONGODB_REALTIME_SERVER_ID';
+export const REALTIME_ENABLED = 'MONGODB_REALTIME_ENABLED';
 
 export interface RealtimeModuleOptions {
     db: Db;
@@ -29,6 +30,13 @@ export interface RealtimeModuleOptions {
      * `undefined`, which keeps every stream open).
      */
     wireHubParking?: boolean;
+    /**
+     * Master switch, surfaced as the `REALTIME_ENABLED` token for pushers to
+     * gate on. Default `true`. Typically wired from
+     * `assertChangeStreamPreflight`'s `ok`, so one preflight decides for every
+     * pusher whether realtime is live.
+     */
+    enabled?: boolean;
 }
 
 /**
@@ -106,6 +114,10 @@ function buildProviders(options: RealtimeModuleOptions): Provider[] {
             useFactory: (): string => randomUUID(),
         },
         {
+            provide: REALTIME_ENABLED,
+            useFactory: (): boolean => options.enabled !== false,
+        },
+        {
             provide: CONNECTION_REGISTRY,
             useFactory: (): ConnectionRegistry => new ConnectionRegistry(),
         },
@@ -147,7 +159,14 @@ export class RealtimeModule {
         return {
             module: RealtimeModule,
             providers: buildProviders(options),
-            exports: [SERVER_ID, CONNECTION_REGISTRY, PRESENCE_STORE, CHANGE_STREAM_HUB, RealtimeLifecycle],
+            exports: [
+                SERVER_ID,
+                REALTIME_ENABLED,
+                CONNECTION_REGISTRY,
+                PRESENCE_STORE,
+                CHANGE_STREAM_HUB,
+                RealtimeLifecycle,
+            ],
         };
     }
 
@@ -169,6 +188,11 @@ export class RealtimeModule {
                 {
                     provide: SERVER_ID,
                     useFactory: (): string => randomUUID(),
+                },
+                {
+                    provide: REALTIME_ENABLED,
+                    useFactory: (moduleOptions: RealtimeModuleOptions): boolean => moduleOptions.enabled !== false,
+                    inject: [OPTIONS_TOKEN],
                 },
                 {
                     provide: CONNECTION_REGISTRY,
@@ -200,7 +224,14 @@ export class RealtimeModule {
                     inject: [PRESENCE_STORE, CHANGE_STREAM_HUB],
                 },
             ] as Provider[],
-            exports: [SERVER_ID, CONNECTION_REGISTRY, PRESENCE_STORE, CHANGE_STREAM_HUB, RealtimeLifecycle],
+            exports: [
+                SERVER_ID,
+                REALTIME_ENABLED,
+                CONNECTION_REGISTRY,
+                PRESENCE_STORE,
+                CHANGE_STREAM_HUB,
+                RealtimeLifecycle,
+            ],
         };
     }
 }

@@ -19,6 +19,18 @@ const REPLICA_SET_ERROR = [
     'stays broken; watchers will log a fatal error and stop).',
 ].join('\n');
 
+export interface PreflightResult {
+    /**
+     * Whether change streams are usable on this deployment. `false` only ever
+     * comes back with `requireChangeStreams: false` — the default throws
+     * instead. Feed it to `ChangeStreamEventPusher`'s `enabled` option (or the
+     * `REALTIME_ENABLED` provider) so pushers stay inert rather than opening
+     * streams that cannot work.
+     */
+    ok: boolean;
+    reason?: 'not-a-replica-set';
+}
+
 export interface PreflightOptions {
     /**
      * Collection names to verify (and enable, via `enablePrePostImages`) for
@@ -48,7 +60,7 @@ export interface PreflightOptions {
  * bootstrap hook they use (Nest's `onApplicationBootstrap`, a CLI script,
  * etc.) — `requireChangeStreams` replaces the config-service read.
  */
-export async function assertChangeStreamPreflight(db: Db, options?: PreflightOptions): Promise<void> {
+export async function assertChangeStreamPreflight(db: Db, options?: PreflightOptions): Promise<PreflightResult> {
     const log = options?.logger
         ? prefixed(options.logger, 'changeStreamPreflight')
         : prefixed(consoleLogger, 'changeStreamPreflight');
@@ -68,7 +80,7 @@ export async function assertChangeStreamPreflight(db: Db, options?: PreflightOpt
                 'MongoDB is not running as a replica set/mongos and requireChangeStreams is false — ' +
                     'skipping the change-stream preflight. No live entity updates will be delivered.'
             );
-            return;
+            return { ok: false, reason: 'not-a-replica-set' };
         }
         throw new Error(REPLICA_SET_ERROR);
     }
@@ -81,12 +93,27 @@ export async function assertChangeStreamPreflight(db: Db, options?: PreflightOpt
                 ?.changeStreamPreAndPostImages?.enabled;
             if (enabled !== true) {
                 throw new Error(
-                    `changeStreamPreAndPostImages is not enabled on collection '${name}' after enablePrePostImages ` +
-                        'ran — hard deletes on this collection will not carry organizationId/ownerId for scoped fan-out.'
+                    [
+                        `Change stream pre-images are not enabled on the "${name}" collection after`,
+                        'enablePrePostImages ran, so hard deletes there cannot carry the scope/owner',
+                        'fields needed to route them — deleted entities would be dropped rather than',
+                        'announced.',
+                        '',
+                        'If the collection already exists, enable pre-images in place:',
+                        `  mongosh --eval 'db.runCommand({ collMod: "${name}", changeStreamPreAndPostImages: { enabled: true } })'`,
+                        '',
+                        'If you are provisioning a FRESH database, create it with pre-images enabled',
+                        'instead, before first run — an ODM that auto-creates the collection would',
+                        'otherwise create it without them and the next restart would hit this again:',
+                        `  mongosh --eval 'db.createCollection("${name}", { changeStreamPreAndPostImages: { enabled: true } })'`,
+                        '',
+                        'Or pass { requireChangeStreams: false } to boot without realtime.',
+                    ].join('\n')
                 );
             }
         }
     }
 
     log.log('Change stream preflight passed');
+    return { ok: true };
 }
