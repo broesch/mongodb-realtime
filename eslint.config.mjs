@@ -6,7 +6,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
     {
-        ignores: ['dist/**', 'docs/**'],
+        ignores: ['dist/**', 'docs/**', '.api-tmp/**'],
     },
     eslint.configs.recommended,
     ...tseslint.configs.recommendedTypeChecked,
