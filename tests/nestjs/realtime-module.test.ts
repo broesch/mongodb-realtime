@@ -122,7 +122,7 @@ describe('RealtimeModule.forRoot', () => {
         await hub.close();
     });
 
-    it('the lifecycle provider runs ensureIndexes on init and clearServer + hub.close on shutdown', async () => {
+    it('the lifecycle provider runs ensureIndexes on init and clearServer + hub.close on onApplicationShutdown', async () => {
         const { db } = await startReplSet();
         const dynamicModule = RealtimeModule.forRoot({
             db,
@@ -134,6 +134,15 @@ describe('RealtimeModule.forRoot', () => {
         const hub = resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub;
         const lifecycle = resolved.get(RealtimeLifecycle) as RealtimeLifecycle;
 
+        // Teardown must be wired to onApplicationShutdown, NOT onModuleDestroy —
+        // see the doc comment on RealtimeLifecycle for why (Nest runs ALL
+        // onModuleDestroy hooks before ANY onApplicationShutdown hook; closing
+        // the hub on the earlier phase would end hub-backed pushers' loops
+        // before those pushers' own onApplicationShutdown had signalled them
+        // to stop).
+        expect(typeof lifecycle.onApplicationShutdown).toBe('function');
+        expect((lifecycle as unknown as { onModuleDestroy?: unknown }).onModuleDestroy).toBeUndefined();
+
         const ensureIndexesSpy = vi.spyOn(presenceStore, 'ensureIndexes');
         const clearServerSpy = vi.spyOn(presenceStore, 'clearServer');
         const hubCloseSpy = vi.spyOn(hub, 'close');
@@ -143,7 +152,7 @@ describe('RealtimeModule.forRoot', () => {
         expect(clearServerSpy).not.toHaveBeenCalled();
         expect(hubCloseSpy).not.toHaveBeenCalled();
 
-        await lifecycle.onModuleDestroy();
+        await lifecycle.onApplicationShutdown();
         expect(clearServerSpy).toHaveBeenCalledTimes(1);
         expect(hubCloseSpy).toHaveBeenCalledTimes(1);
     });

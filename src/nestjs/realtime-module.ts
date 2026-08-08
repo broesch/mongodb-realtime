@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument */
 // NestJS DI uses any[] for injection tokens and factory args by design — mirrors mongo_queue's src/nestjs/index.ts.
 import { randomUUID } from 'node:crypto';
-import type { DynamicModule, OnModuleDestroy, OnModuleInit, Provider } from '@nestjs/common';
+import type { DynamicModule, OnApplicationShutdown, OnModuleInit, Provider } from '@nestjs/common';
 import type { Db } from 'mongodb';
 import { ChangeStreamHub, type ChangeStreamHubOptions } from '../core/change-stream-hub.js';
 import { ConnectionRegistry } from '../presence/connection-registry.js';
@@ -36,8 +36,39 @@ export interface RealtimeModuleOptions {
  * package keeps `@nestjs/common` an optional peer, so no `@Injectable()`
  * anywhere — see `RealtimeModule.forRoot`, which wires this class in via a
  * factory provider instead of `useClass`).
+ *
+ * Teardown deliberately runs on `onApplicationShutdown`, NOT `onModuleDestroy`,
+ * even though the latter sounds like the "right" hook for a module's own
+ * cleanup. Nest runs the two as separate phases: it drains every provider's
+ * `onModuleDestroy` across the whole app, THEN starts the `onApplicationShutdown`
+ * phase. A hub-backed `ChangeStreamEventPusher` gateway (see
+ * `change-stream-event-pusher.ts`) also tears down on `onApplicationShutdown` —
+ * it signals its `shutdown` latch there and awaits its push loop draining. If
+ * this class closed the hub on `onModuleDestroy` instead, the hub would close
+ * (ending every hub-backed pusher's `for await` mid-stream) before those
+ * pushers' own `onApplicationShutdown` ever set `shutdown`, so every pusher's
+ * "watcher returned before shutdown" guard would fire as a spurious operator-
+ * visible error on every clean shutdown — not a crash, just log noise that
+ * looks like one.
+ *
+ * Putting both on `onApplicationShutdown` instead works IF this module's hub
+ * closes after the gateways' loops have already been signalled to stop —
+ * which is exactly what Nest gives you for free: within a single lifecycle
+ * phase, hooks run in REVERSE module-instantiation order. So as long as
+ * `RealtimeModule` is imported from the app's root module (making it one of
+ * the first modules instantiated), its `onApplicationShutdown` runs LAST —
+ * after every feature module's gateway has already signalled shutdown and
+ * started draining. This mirrors fm's arrangement, where the shared
+ * `TenantChangeStreamHub` lives in an early-instantiated `@Global` module for
+ * the same reason (see the `whenShutdown` ordering comment in
+ * `watch-entity-changes-all-tenants.ts`).
+ *
+ * Two obligations this places on the consumer: import `RealtimeModule` from
+ * the ROOT module (not lazily from a feature module) so it instantiates
+ * early, and call `app.enableShutdownHooks()` — without it Nest never invokes
+ * `onApplicationShutdown` at all, on this class or on any gateway.
  */
-export class RealtimeLifecycle implements OnModuleInit, OnModuleDestroy {
+export class RealtimeLifecycle implements OnModuleInit, OnApplicationShutdown {
     constructor(
         private readonly presenceStore: PresenceStore,
         private readonly hub: ChangeStreamHub
@@ -47,7 +78,7 @@ export class RealtimeLifecycle implements OnModuleInit, OnModuleDestroy {
         await this.presenceStore.ensureIndexes();
     }
 
-    async onModuleDestroy(): Promise<void> {
+    async onApplicationShutdown(): Promise<void> {
         await this.presenceStore.clearServer();
         await this.hub.close();
     }
