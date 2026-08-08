@@ -1,3 +1,4 @@
+import type { RemoteSocket } from 'socket.io';
 import type { ChangeEvent } from '../core/change-event.js';
 import type { Logger } from '../common/logger.js';
 import type { ReadonlySignal } from '../common/signal.js';
@@ -31,4 +32,57 @@ export interface PushScopedOptions<TTenant> {
 export interface PushOwnerScopedOptions<TTenant> extends Omit<PushScopedOptions<TTenant>, 'roomOf'> {
     /** Resolves the owning user id from a changed document. Removed events use `event.ownerId` instead. */
     ownerIdOf: (data: unknown) => string | null | undefined;
+}
+
+/**
+ * Two-variant fan-out hook (PII gating). `render` runs ONCE per changed doc,
+ * producing a `{ full, redacted }` pair; the per-socket delivery loop then
+ * emits whichever one `pick(socket)` selects. This is DELIBERATELY not a
+ * generic per-socket transformer — `pick` can only ever choose between the
+ * two pre-rendered values, so a recipient can never be sent an arbitrary
+ * bespoke payload. Mutually exclusive with `mapData`.
+ */
+export interface FanoutVariants {
+    render: (data: unknown) => { full: unknown; redacted: unknown };
+    pick: (socket: RemoteSocket<never, unknown>) => 'full' | 'redacted';
+}
+
+export interface PushScopedFilteredOptions<TTenant> extends PushScopedOptions<TTenant> {
+    /**
+     * Permission filter run against every socket connected to the event's
+     * room. Sockets that return false (or reject) receive nothing. Look up
+     * the connected user from `socket.data` and delegate to the host app's
+     * permissions layer.
+     */
+    canReceive: (
+        socket: RemoteSocket<never, unknown>,
+        data: unknown,
+        // Once-per-event value produced by `prepareEvent`; `undefined` when no
+        // `prepareEvent` is supplied (a `canReceive` that ignores the 3rd
+        // argument is unaffected).
+        prepared?: unknown
+    ) => boolean | Promise<boolean>;
+    /**
+     * Once-per-event hook (perf): for work that is a property of the EVENT,
+     * not the recipient — e.g. resolving an entity's hierarchy scope. Without
+     * it, a `canReceive` that does such a resolution repeats the SAME
+     * tenant-scoped lookup for every one of the K connected sockets. When
+     * supplied, the hook runs ONCE per event — inside the same `runInContext`
+     * block that wraps `variants.render`/`mapData` — and its result is
+     * threaded to every `canReceive` call as the 3rd argument. The return is
+     * `await`ed by the fan-out loop, so `unknown` already covers a
+     * Promise-returning hook.
+     */
+    prepareEvent?: (data: unknown) => unknown;
+    /** Two-variant PII rendering; mutually exclusive with `mapData` (asserted at call time). */
+    variants?: FanoutVariants;
+    /**
+     * Generalizes a request-scoped context (e.g. NestJS CLS) around the
+     * once-per-event block and each per-recipient `canReceive` check, so
+     * tenant-scoped reads inside those hooks hit the right tenant. Omit it
+     * (or `tenantOf`) to run the hooks directly — transition-safe default.
+     */
+    runInContext?: <R>(ctx: { tenant?: unknown }, fn: () => Promise<R>) => Promise<R>;
+    /** Resolves a connected socket's tenant, for seeding its `canReceive` context via `runInContext`. */
+    tenantOf?: (socket: RemoteSocket<never, unknown>) => unknown;
 }

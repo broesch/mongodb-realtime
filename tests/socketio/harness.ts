@@ -2,9 +2,15 @@
  * Shared socket.io test harness (Task 12 + reused by Task 13's NestJS
  * gateway tests). Boots a real `Server` on an ephemeral http port and
  * connects real `socket.io-client` sockets against it, so `pushScoped` /
- * `pushOwnerScoped` are exercised against actual room delivery rather than a
- * mocked `Server`. The server joins a connected client to a room on a
- * `join` message (acked, so a test can await the join before emitting).
+ * `pushOwnerScoped` / `pushScopedFiltered` are exercised against actual room
+ * delivery rather than a mocked `Server`. The server joins a connected
+ * client to a room on a `join` message (acked, so a test can await the join
+ * before emitting). `join` also accepts an optional data payload, merged
+ * onto the server-side socket's `.data`, so `pushScopedFiltered` tests can
+ * exercise `canReceive`/`variants.pick`/`tenantOf` against real per-socket
+ * state instead of a mock. Backward compatible with Task 12's 2-arg
+ * `client.emit('join', room, ack)` calls — the handler tells a data payload
+ * from an ack callback by type.
  */
 import { createServer, type Server as HttpServer } from 'node:http';
 import { Server } from 'socket.io';
@@ -30,7 +36,18 @@ export async function startHarness(): Promise<StartedHarness> {
     const httpServer = createServer();
     const server = new Server(httpServer, { transports: ['websocket'] });
     server.on('connection', socket => {
-        socket.on('join', (room: string, ack?: () => void) => {
+        socket.on('join', (room: string, arg2?: unknown, arg3?: unknown) => {
+            let data: Record<string, unknown> | undefined;
+            let ack: (() => void) | undefined;
+            if (typeof arg2 === 'function') {
+                ack = arg2 as () => void;
+            } else {
+                data = arg2 as Record<string, unknown> | undefined;
+                ack = arg3 as (() => void) | undefined;
+            }
+            if (data !== undefined) {
+                socket.data = Object.assign((socket.data as Record<string, unknown>) ?? {}, data);
+            }
             void socket.join(room);
             ack?.();
         });
@@ -78,6 +95,21 @@ export async function connectClient(port: number): Promise<ClientSocket> {
 export async function joinRoom(client: ClientSocket, room: string): Promise<void> {
     await new Promise<void>(resolve => {
         client.emit('join', room, () => resolve());
+    });
+}
+
+/**
+ * Like `joinRoom`, but also merges `data` onto the server-side socket's
+ * `.data`, so a subsequent `pushScopedFiltered` call can read it back via
+ * `canReceive(socket, ...)`, `variants.pick(socket)`, or `tenantOf(socket)`.
+ */
+export async function joinRoomWithData(
+    client: ClientSocket,
+    room: string,
+    data: Record<string, unknown>
+): Promise<void> {
+    await new Promise<void>(resolve => {
+        client.emit('join', room, data, () => resolve());
     });
 }
 
