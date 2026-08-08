@@ -25,3 +25,14 @@ export function scopeRoom(id: string): string {
 export function namespacedRoom(ns: string | undefined, room: string): string {
     return ns ? `${ns}::${room}` : room;
 }
+
+/**
+ * Normalises a room specifier to a list, dropping empty entries. A single
+ * `to(rooms)` call with the full list is not the same as one `to()` per room:
+ * socket.io deduplicates recipients WITHIN a call, so a socket that belongs
+ * to two of the target rooms receives one copy from the former and two from
+ * the latter.
+ */
+export function toRooms(rooms: string | string[]): string[] {
+    return (Array.isArray(rooms) ? rooms : [rooms]).filter(Boolean);
+}

@@ -95,3 +95,23 @@ export interface PushScopedFilteredOptions<TTenant> extends PushScopedOptions<TT
     /** Resolves a connected socket's tenant, for seeding its `canReceive` context via `runInContext`. */
     tenantOf?: (socket: RemoteSocket<never, unknown>) => unknown;
 }
+
+/** What {@link pushMapped}'s selector asks the loop to emit for one change event. */
+export interface MappedEmission {
+    /** socket.io event name. */
+    name: string;
+    payload: unknown;
+    /**
+     * One or more rooms. Emitted in a SINGLE `server.to(rooms)` call, so a
+     * socket belonging to several of them receives exactly one copy.
+     */
+    rooms: string | string[];
+}
+
+export interface PushMappedOptions {
+    /** Signals a graceful shutdown in progress; suppresses the "watcher returned early" error log. */
+    shutdown: ReadonlySignal<boolean>;
+    logger?: Logger;
+    /** Log-message prefix; identifies which pusher an operator-visible log line came from. */
+    name?: string;
+}
