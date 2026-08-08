@@ -1,6 +1,6 @@
-# Follow-ups for 0.1.x (from the v0.1.0 final review)
+# Follow-ups (0.1.x / 0.2.x)
 
-All ship-safe (triaged by the final whole-branch review); scheduled for 0.1.x or the adoption projects.
+All ship-safe (triaged by the final whole-branch review); scheduled for a future point release or the adoption projects.
 
 ## API hardening
 - ~~`ChangeStreamHub.close()` is terminal but unguarded: a post-close `subscribe()` on a new key opens an untracked cursor; on an existing key it hands back a dead generator that hangs. Add a `closed` flag that throws on `subscribe()` (~5 lines).~~ **Done — Task 8 (0.2.0):** `close()` now sets a terminal flag; `subscribe()` throws after close instead of opening an untracked cursor or handing back a dead generator.
@@ -26,3 +26,7 @@ All ship-safe (triaged by the final whole-branch review); scheduled for 0.1.x or
 
 ## Out of repo
 - mongo_queue has the same latent CJS-under-`"type":"module"` bug this repo fixed in Task 1 (separate fix task exists).
+
+## Rot watch (0.2.0 final review)
+- `@microsoft/api-extractor@7.58.12` bundles its own `typescript@5.9.3`, one minor behind this project's `typescript@^6.0.3` — `api:check` is green today because `.api-tmp/` generation only exercises the declaration surface, but bump `@microsoft/api-extractor` to whatever release first bundles a TS 6.x compiler once one exists, so the checked-in-report step stays on the same compiler as `typecheck`.
+- Checked during this review: `PushScopedOptions` (and `PushScopedFilteredOptions`/`PushOwnerScopedOptions`, which extend it) already carry the same optional `name` log-prefix field as `PushMappedOptions` (`src/socketio/types.ts`) — no asymmetry found, no action needed.

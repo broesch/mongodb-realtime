@@ -20,7 +20,7 @@ export interface PresenceEvent {
     ownedByThisServer: boolean;
     /** Application metadata from the presence row (`PresenceStore.checkIn({ meta })`). */
     meta?: Record<string, unknown>;
-    /** The row's current `page`. Always present on `activity`; present on `online`/`offline` when the row carried one. */
+    /** The row's current `page`. Present on `activity` when the row carries one; present on `online`/`offline` when the row carried one. */
     page?: string;
 }
 
@@ -174,7 +174,10 @@ async function toPresenceEvent(
                         ?.updatedFields ?? {}
                 );
                 const touched = written.some(field =>
-                    activityFields.some(watched => field === watched || field.startsWith(`${watched}.`))
+                    activityFields.some(
+                        watched =>
+                            field === watched || field.startsWith(`${watched}.`) || watched.startsWith(`${field}.`)
+                    )
                 );
                 if (!touched) return undefined;
             }

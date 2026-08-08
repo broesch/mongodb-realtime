@@ -66,13 +66,19 @@ export type ChangeEvent<TTenant = unknown> = EntityChanged<TTenant> | EntityRemo
  *
  * A dotted subpath write (`{'address.city': 'X'}`) counts as a write of its
  * parent (`address`), because that is what a consumer watching `address`
- * means; a field that merely shares a prefix (`statusCode` vs `status`) does
- * not.
+ * means, and the reverse also holds: a write of the parent (`{'address':
+ * {...}}`) counts as a write of a watched dotted subpath (`address.city`),
+ * because `$set`-ing the whole parent rewrites every subfield underneath it —
+ * `didChange(event, 'address.city')` must see that just as clearly as
+ * `didChange(event, 'address')` does. A field that merely shares a prefix
+ * (`statusCode` vs `status`) matches in neither direction.
  */
 export function didChange(event: ChangeEvent, field: string): boolean {
     if (event.type !== 'changed') return false;
     if (event.operation !== 'update') return true;
-    return (event.updatedFields ?? []).some(written => written === field || written.startsWith(`${field}.`));
+    return (event.updatedFields ?? []).some(
+        written => written === field || written.startsWith(`${field}.`) || field.startsWith(`${written}.`)
+    );
 }
 
 /**

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Collection } from 'mongodb';
 import { describe, it, expect, afterAll, vi } from 'vitest';
 import { watchPresence, type PresenceEvent } from '../../src/presence/watch-presence.js';
 import { PresenceStore } from '../../src/presence/presence-store.js';
@@ -230,6 +231,32 @@ describe('watchPresence', () => {
 
         const event = await expectEvent(tracked);
         expect(event).toMatchObject({ type: 'activity', userId, scopeId: 'scope-1', page: '/calendar' });
+
+        shutdown.next(true);
+    });
+
+    it('yields activity for a write to the parent of a dotted, customized activityFields entry', async () => {
+        const { store1 } = await makeStores();
+        const shutdown = new ValueSignal(false);
+        const tracked = trackNext(watchPresence({ store: store1, shutdown, activityFields: ['session.page'] }));
+        await waitForWatchOpen(tracked, store1);
+
+        const userId = randomUUID();
+        const clientId = randomUUID();
+        await store1.checkIn({ userId, clientId, scopeId: 'scope-1' });
+        await expectEvent(tracked); // the online event
+
+        // The whole `session` parent is rewritten (not the dotted `session.page`
+        // subfield directly) — this must still count as a write of the watched
+        // `session.page` activityFields entry, mirroring `didChange`'s reverse
+        // prefix match.
+        await (store1.collection as unknown as Collection).updateOne(
+            { userId, clientId, serverId: store1.serverId },
+            { $set: { session: { page: '/calendar' } } }
+        );
+
+        const event = await expectEvent(tracked);
+        expect(event).toMatchObject({ type: 'activity', userId, scopeId: 'scope-1' });
 
         shutdown.next(true);
     });

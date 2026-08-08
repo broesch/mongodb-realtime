@@ -229,8 +229,13 @@ describe('didChange', () => {
         expect(didChange(changed({ updatedFields: ['address.city'] }), 'address')).toBe(true);
     });
 
-    it('does not match a field that merely shares a prefix', () => {
+    it('matches a parent write as a write of a watched dotted subpath', () => {
+        expect(didChange(changed({ updatedFields: ['address'] }), 'address.city')).toBe(true);
+    });
+
+    it('does not match a field that merely shares a prefix, in either direction', () => {
         expect(didChange(changed({ updatedFields: ['statusCode'] }), 'status')).toBe(false);
+        expect(didChange(changed({ updatedFields: ['status'] }), 'statusCode')).toBe(false);
     });
 
     it('is false for removed events, which wrote no fields', () => {
