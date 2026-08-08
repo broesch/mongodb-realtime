@@ -1,4 +1,4 @@
-import type { Collection, Db } from 'mongodb';
+import type { Collection, Db, ObjectId } from 'mongodb';
 import { enablePrePostImages } from '../core/enable-pre-post-images.js';
 import { consoleLogger, prefixed, type Logger } from '../common/logger.js';
 import type { PresenceDoc, PresenceStoreOptions } from './types.js';
@@ -96,5 +96,18 @@ export class PresenceStore {
     /** Count of this user's rows across all servers. */
     async countUserRows(userId: string): Promise<number> {
         return this.collection.countDocuments({ userId });
+    }
+
+    /**
+     * Count of this user's rows (across all servers) whose `_id` sorts before
+     * `beforeId` — i.e. rows inserted earlier. Order-stable 0→1 online
+     * detection (`watchPresence`) asks "is any older row present?" instead of
+     * a live total count: with N concurrent first-time check-ins, every
+     * racer's row lands with a distinct `_id`, and this answers identically
+     * regardless of when it's evaluated relative to the other inserts —
+     * exactly the row with the smallest `_id` sees zero older rows.
+     */
+    async countOlderUserRows(userId: string, beforeId: ObjectId): Promise<number> {
+        return this.collection.countDocuments({ userId, _id: { $lt: beforeId } });
     }
 }

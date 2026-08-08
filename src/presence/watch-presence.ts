@@ -1,4 +1,4 @@
-import type { ChangeStreamDocument, Collection, Document } from 'mongodb';
+import type { ChangeStreamDocument, Collection, Document, ObjectId } from 'mongodb';
 import { ChangeStreamSubscription } from '../core/change-stream-subscription.js';
 import { collectionWatchFactory } from '../core/watch-collection.js';
 import { consoleLogger, prefixed, type Logger } from '../common/logger.js';
@@ -22,14 +22,27 @@ export interface PresenceEvent {
  * on ANY node is visible to every node (fm's `presence.gateway.ts` pre-image
  * handling for the delete side).
  *
- * insert → `countUserRows(userId) === 1` → online (fields from `fullDocument`).
- * delete → `countUserRows(userId) === 0` → offline (fields from the pre-image).
- * update/replace (keepalive/setPage) → no event.
+ * insert → online iff no OTHER row for this user is older (order-stable — see
+ * `toPresenceEvent`'s insert branch and `PresenceStore.countOlderUserRows`).
+ * A live "total count === 1" check is order-DEPENDENT: two near-simultaneous
+ * first connections would each read a total of 2 once both writes have
+ * landed, and NEITHER would ever announce — the user is durably online but
+ * was never yielded, and the eventual last checkout emits a stray `offline`
+ * with no matching `online`. Asking "is any older row present?" instead gives
+ * the same answer no matter when it's evaluated: whichever racer's row holds
+ * the smallest `_id` announces — exactly one, at any degree of concurrency.
  *
- * Counting AFTER observing the event, rather than racing a live count against
- * the write, is safe because change-stream events for a given document key
- * are delivered in write order — by the time this insert/delete event is
- * observed, `countUserRows` already reflects (at least) that write.
+ * delete → `countUserRows(userId) === 0` → offline (fields from the
+ * pre-image). This mirrors the reference's `announceOffline` exactly: a
+ * plain remaining-count check, NOT order-stable. Two simultaneous
+ * last-checkouts can each observe 0 remaining rows (the other racer's delete
+ * already landed in the DB by the time this one's count runs, even though
+ * its own change-stream event hasn't been processed yet) and both yield
+ * `offline` — an accepted, harmless duplicate: a consumer folding these into
+ * "is this user online" a second `offline` while already offline is a no-op,
+ * whereas a missed `online` (the insert failure mode above) is not.
+ *
+ * update/replace (keepalive/setPage) → no event.
  */
 export async function* watchPresence(options: {
     store: PresenceStore;
@@ -71,9 +84,14 @@ async function toPresenceEvent(
 ): Promise<PresenceEvent | undefined> {
     switch (change.operationType) {
         case 'insert': {
-            const doc = change.fullDocument as PresenceDoc | undefined;
-            if (!doc) return undefined;
-            if ((await store.countUserRows(doc.userId)) !== 1) return undefined;
+            const doc = change.fullDocument as (PresenceDoc & { _id?: ObjectId }) | undefined;
+            if (!doc || !doc.userId || !doc._id) {
+                log.warn('Skipping presence insert with no userId or _id — cannot determine online transition');
+                return undefined;
+            }
+            // Order-stable 0→1 check — see the module docstring for why a live
+            // total-count check would silently swallow concurrent first connections.
+            if ((await store.countOlderUserRows(doc.userId, doc._id)) > 0) return undefined;
             return {
                 type: 'online',
                 userId: doc.userId,

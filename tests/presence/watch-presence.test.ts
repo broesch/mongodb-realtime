@@ -78,6 +78,32 @@ describe('watchPresence', () => {
         shutdown.next(true);
     });
 
+    it('two concurrent first-time checkIns for a brand-new user yield EXACTLY ONE online event', async () => {
+        // Regression for the order-dependent "total count === 1" bug: two racers
+        // inserting near-simultaneously would each read a total of 2 once both
+        // writes had landed, and neither would ever announce online. The
+        // order-stable "any older row?" check must instead let exactly the
+        // racer with the smallest _id through, regardless of read timing.
+        const { store1 } = await makeStores();
+        const shutdown = new ValueSignal(false);
+        const tracked = trackNext(watchPresence({ store: store1, shutdown }));
+        await waitForWatchOpen(tracked, store1);
+
+        const userId = randomUUID();
+        await Promise.all([
+            store1.checkIn({ userId, clientId: randomUUID(), scopeId: 'scope-1' }),
+            store1.checkIn({ userId, clientId: randomUUID(), scopeId: 'scope-1' }),
+        ]);
+
+        const event = await expectEvent(tracked);
+        expect(event).toMatchObject({ type: 'online', userId, scopeId: 'scope-1', ownedByThisServer: true });
+
+        // No second online event trailing behind the first.
+        await expectNoEvent(tracked);
+
+        shutdown.next(true);
+    });
+
     it('checkOut of one of two rows yields nothing; checkOut of the last row yields offline (1→0 transition)', async () => {
         const { store1 } = await makeStores();
         const shutdown = new ValueSignal(false);

@@ -180,4 +180,39 @@ describe('PresenceStore', () => {
         const count = await store.countUserRows(userId);
         expect(count).toBe(3);
     });
+
+    it('countOlderUserRows counts only this user’s rows inserted before the given _id, across servers', async () => {
+        const store = await makeStore();
+        const userId = randomUUID();
+        const otherUserId = randomUUID();
+
+        const first = await store.collection.insertOne({
+            userId,
+            clientId: randomUUID(),
+            serverId: randomUUID(),
+            scopeId: 'scope-1',
+            key: '__default__',
+            lastSeen: new Date(),
+        });
+        const second = await store.collection.insertOne({
+            userId,
+            clientId: randomUUID(),
+            serverId: randomUUID(),
+            scopeId: 'scope-1',
+            key: '__default__',
+            lastSeen: new Date(),
+        });
+        // a row for a DIFFERENT user, inserted between the two above — must not count.
+        await store.collection.insertOne({
+            userId: otherUserId,
+            clientId: randomUUID(),
+            serverId: randomUUID(),
+            scopeId: 'scope-1',
+            key: '__default__',
+            lastSeen: new Date(),
+        });
+
+        expect(await store.countOlderUserRows(userId, first.insertedId)).toBe(0);
+        expect(await store.countOlderUserRows(userId, second.insertedId)).toBe(1);
+    });
 });
