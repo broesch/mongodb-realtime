@@ -54,8 +54,37 @@ export interface ChangeStreamEventPusherOptions {
     logger?: Logger;
 }
 
+// @public
+export class ChangeStreamHub {
+    constructor(options?: ChangeStreamHubOptions);
+    close(): Promise<void>;
+    subscribe(key: string, db: Db, collectionName: string): AsyncGenerator<ChangeStreamDocument>;
+}
+
+// @public (undocumented)
+export interface ChangeStreamHubOptions {
+    connectedKeys?: ReadonlySignal<string[]>;
+    graceMs?: number;
+    ignoreCollections?: string[];
+    // (undocumented)
+    logger?: Logger;
+    maxQueue?: number;
+}
+
 // @public (undocumented)
 export const CONNECTION_REGISTRY = "MONGODB_REALTIME_CONNECTION_REGISTRY";
+
+// @public
+export interface Logger {
+    // (undocumented)
+    debug(message: string): void;
+    // (undocumented)
+    error(message: string, stack?: string): void;
+    // (undocumented)
+    log(message: string): void;
+    // (undocumented)
+    warn(message: string): void;
+}
 
 // @public (undocumented)
 export interface PreflightOptions {
@@ -74,6 +103,78 @@ export interface PreflightResult {
 
 // @public (undocumented)
 export const PRESENCE_STORE = "MONGODB_REALTIME_PRESENCE_STORE";
+
+// @public
+export interface PresenceDoc {
+    // (undocumented)
+    clientId: string;
+    // (undocumented)
+    key: string;
+    // (undocumented)
+    lastSeen: Date;
+    // (undocumented)
+    meta?: Record<string, unknown>;
+    // (undocumented)
+    page?: string;
+    // (undocumented)
+    scopeId: string;
+    // (undocumented)
+    serverId: string;
+    // (undocumented)
+    userId: string;
+}
+
+// @public
+export class PresenceStore {
+    constructor(options: PresenceStoreOptions);
+    // (undocumented)
+    checkIn(entry: {
+        userId: string;
+        clientId: string;
+        scopeId: string;
+        key?: string;
+        meta?: Record<string, unknown>;
+    }): Promise<{
+        isNewConnection: boolean;
+    }>;
+    // (undocumented)
+    checkOut(userId: string, clientId: string): Promise<void>;
+    clearServer(): Promise<void>;
+    // (undocumented)
+    readonly collection: Collection<PresenceDoc>;
+    countOlderUserRows(userId: string, beforeId: ObjectId): Promise<number>;
+    countUserRows(userId: string): Promise<number>;
+    ensureIndexes(): Promise<void>;
+    // (undocumented)
+    keepAlive(userId: string, clientId: string): Promise<void>;
+    // (undocumented)
+    readonly serverId: string;
+    // (undocumented)
+    setPage(userId: string, clientId: string, page: string): Promise<void>;
+}
+
+// @public (undocumented)
+export interface PresenceStoreOptions {
+    // (undocumented)
+    collectionName?: string;
+    // (undocumented)
+    db: Db;
+    // (undocumented)
+    logger?: Logger;
+    // (undocumented)
+    serverId: string;
+    // (undocumented)
+    ttlSeconds?: number;
+}
+
+// @public (undocumented)
+export interface ReadonlySignal<T> {
+    // (undocumented)
+    getValue(): T;
+    subscribe(listener: (value: T) => void): {
+        unsubscribe(): void;
+    };
+}
 
 // @public (undocumented)
 export const REALTIME_ENABLED = "MONGODB_REALTIME_ENABLED";
@@ -112,7 +213,18 @@ export interface RealtimeModuleOptions {
 }
 
 // @public (undocumented)
+export type ResumeOptions = ChangeStreamOptions & {
+    writeConcern?: never;
+};
+
+// @public (undocumented)
 export const SERVER_ID = "MONGODB_REALTIME_SERVER_ID";
+
+// @public (undocumented)
+export interface Signal<T> extends ReadonlySignal<T> {
+    // (undocumented)
+    next(value: T): void;
+}
 
 // @public (undocumented)
 export const SOCKET_SERVER = "MONGODB_REALTIME_SOCKET_SERVER";
@@ -124,6 +236,19 @@ export class SocketServerHandle {
     isReady(): boolean;
     setServer(server: Server): void;
     whenReady(): Promise<Server>;
+}
+
+// @public
+export class ValueSignal<T> implements Signal<T> {
+    constructor(value: T);
+    // (undocumented)
+    getValue(): T;
+    // (undocumented)
+    next(value: T): void;
+    // (undocumented)
+    subscribe(listener: (value: T) => void): {
+        unsubscribe(): void;
+    };
 }
 
 // (No @packageDocumentation comment for this package)

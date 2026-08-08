@@ -86,7 +86,7 @@ export function isUnresumableChangeStreamError(error: unknown): boolean {
     );
 }
 
-type ChangeStreamFactory<TScope, TChange extends ChangeStreamDocument<Document>> = (
+export type ChangeStreamFactory<TScope, TChange extends ChangeStreamDocument<Document>> = (
     scope: TScope[],
     options: ResumeOptions
 ) => ChangeStream<Document, TChange>;

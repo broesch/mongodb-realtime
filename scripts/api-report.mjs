@@ -45,9 +45,6 @@ for (const entry of entries) {
                 },
                 extractorMessageReporting: {
                     default: { logLevel: 'warning' },
-                    // Only actionable for consumers of the .d.ts rollup, which we don't
-                    // produce (dtsRollup is disabled above).
-                    'ae-forgotten-export': { logLevel: 'none' },
                     // We don't maintain TSDoc @public/@beta/@internal release tags across
                     // this internal package's surface; the api.md diff itself is the
                     // reviewable signal, not the tag hierarchy.

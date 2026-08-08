@@ -27,6 +27,9 @@ export interface ChangeEventConventions {
 // @public
 export type ChangeOperation = 'insert' | 'update' | 'replace';
 
+// @public (undocumented)
+export type ChangeStreamFactory<TScope, TChange extends ChangeStreamDocument<Document_2>> = (scope: TScope[], options: ResumeOptions) => ChangeStream<Document_2, TChange>;
+
 // @public
 export class ChangeStreamHub {
     constructor(options?: ChangeStreamHubOptions);

@@ -7,6 +7,37 @@
 import type { RemoteSocket } from 'socket.io';
 import type { Server } from 'socket.io';
 
+// @public (undocumented)
+export type ChangeEvent<TTenant = unknown> = EntityChanged<TTenant> | EntityRemoved<TTenant>;
+
+// @public
+export type ChangeOperation = 'insert' | 'update' | 'replace';
+
+// @public (undocumented)
+export interface EntityChanged<TTenant = unknown> {
+    data: unknown;
+    operation: ChangeOperation;
+    scopeId: string;
+    // (undocumented)
+    tenant?: TTenant;
+    // (undocumented)
+    type: 'changed';
+    updatedFields?: string[];
+}
+
+// @public (undocumented)
+export interface EntityRemoved<TTenant = unknown> {
+    // (undocumented)
+    id: string;
+    ownerId?: string;
+    scopeId?: string;
+    // (undocumented)
+    tenant?: TTenant;
+    // (undocumented)
+    type: 'removed';
+    via: 'delete' | 'softDelete';
+}
+
 // @public
 export interface FanoutVariants {
     // (undocumented)
@@ -16,6 +47,18 @@ export interface FanoutVariants {
         full: unknown;
         redacted: unknown;
     };
+}
+
+// @public
+export interface Logger {
+    // (undocumented)
+    debug(message: string): void;
+    // (undocumented)
+    error(message: string, stack?: string): void;
+    // (undocumented)
+    log(message: string): void;
+    // (undocumented)
+    warn(message: string): void;
 }
 
 // @public
@@ -82,6 +125,15 @@ export interface PushScopedOptions<TTenant> {
     roomOf?: (event: ChangeEvent<TTenant>) => string | string[];
     shutdown: ReadonlySignal<boolean>;
     tenantNamespace?: (tenant: TTenant) => string | undefined;
+}
+
+// @public (undocumented)
+export interface ReadonlySignal<T> {
+    // (undocumented)
+    getValue(): T;
+    subscribe(listener: (value: T) => void): {
+        unsubscribe(): void;
+    };
 }
 
 // @public

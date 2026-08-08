@@ -49,6 +49,18 @@ export const DEFAULT_ACTIVITY_FIELDS: string[];
 export const DEFAULT_PRESENCE_COLLECTION = "onlineUsers";
 
 // @public
+export interface Logger {
+    // (undocumented)
+    debug(message: string): void;
+    // (undocumented)
+    error(message: string, stack?: string): void;
+    // (undocumented)
+    log(message: string): void;
+    // (undocumented)
+    warn(message: string): void;
+}
+
+// @public
 export interface PresenceDoc {
     // (undocumented)
     clientId: string;
@@ -124,6 +136,15 @@ export interface PresenceStoreOptions {
     serverId: string;
     // (undocumented)
     ttlSeconds?: number;
+}
+
+// @public (undocumented)
+export interface ReadonlySignal<T> {
+    // (undocumented)
+    getValue(): T;
+    subscribe(listener: (value: T) => void): {
+        unsubscribe(): void;
+    };
 }
 
 // @public
