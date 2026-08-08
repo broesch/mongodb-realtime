@@ -40,6 +40,10 @@ function connectedKeysOf(hub: ChangeStreamHub): unknown {
     return (hub as unknown as { options: { connectedKeys: unknown } }).options.connectedKeys;
 }
 
+function ignoreCollectionsOf(hub: ChangeStreamHub): string[] {
+    return [...(hub as unknown as { ignoreCollections: Set<string> }).ignoreCollections];
+}
+
 describe('RealtimeModule.forRoot', () => {
     afterAll(() => stopReplSet());
 
@@ -118,6 +122,50 @@ describe('RealtimeModule.forRoot', () => {
         const hub = resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub;
 
         expect(connectedKeysOf(hub)).toBeUndefined();
+
+        await hub.close();
+    });
+
+    it("default wiring: the hub's ignoreCollections contains the default presence collection name ('onlineUsers')", async () => {
+        const { db } = await startReplSet();
+        // No `presence` option at all: `hubIgnoreCollections` falls back to
+        // the PresenceStore's own default ('onlineUsers') — verified by the
+        // dedicated custom-name test below for the overridden case.
+        const dynamicModule = RealtimeModule.forRoot({ db });
+        const resolved = await resolveProviders(dynamicModule.providers as unknown as FactoryProvider[]);
+        const hub = resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub;
+
+        expect(ignoreCollectionsOf(hub)).toContain('onlineUsers');
+
+        await hub.close();
+    });
+
+    it('custom presence.collectionName: the hub ignores that name instead of the default', async () => {
+        const { db } = await startReplSet();
+        const customName = uniqueCollection('presence');
+        const dynamicModule = RealtimeModule.forRoot({
+            db,
+            presence: { collectionName: customName },
+        });
+        const resolved = await resolveProviders(dynamicModule.providers as unknown as FactoryProvider[]);
+        const hub = resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub;
+
+        expect(ignoreCollectionsOf(hub)).toContain(customName);
+        expect(ignoreCollectionsOf(hub)).not.toContain('onlineUsers');
+
+        await hub.close();
+    });
+
+    it('user-supplied hub.ignoreCollections are preserved alongside the presence collection', async () => {
+        const { db } = await startReplSet();
+        const dynamicModule = RealtimeModule.forRoot({
+            db,
+            hub: { ignoreCollections: ['auditLog', 'metrics'] },
+        });
+        const resolved = await resolveProviders(dynamicModule.providers as unknown as FactoryProvider[]);
+        const hub = resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub;
+
+        expect(ignoreCollectionsOf(hub)).toEqual(expect.arrayContaining(['auditLog', 'metrics', 'onlineUsers']));
 
         await hub.close();
     });

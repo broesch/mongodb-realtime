@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import { watchPresence, type PresenceEvent } from '../../src/presence/watch-presence.js';
 import { PresenceStore } from '../../src/presence/presence-store.js';
 import { ValueSignal } from '../../src/common/signal.js';
@@ -168,6 +168,45 @@ describe('watchPresence', () => {
 
         await store1.keepAlive(userId, clientId);
         await expectNoEvent(tracked);
+
+        shutdown.next(true);
+    });
+
+    it('a transient rejection from countOlderUserRows is logged and skipped, without killing the generator', async () => {
+        // Regression: toPresenceEvent's awaited count query used to throw
+        // straight out of the for-await loop, permanently ending
+        // watchPresence on one transient Mongo blip (server-selection
+        // timeout, failover) until process restart. It must instead log and
+        // skip just that event, leaving the generator alive for the next one.
+        const { store1 } = await makeStores();
+        const shutdown = new ValueSignal(false);
+        const tracked = trackNext(watchPresence({ store: store1, shutdown }));
+        await waitForWatchOpen(tracked, store1);
+
+        // spyOn + mockImplementationOnce rejects exactly the NEXT call, then
+        // falls back to the real implementation for every call after — no
+        // manual restore needed for the second checkIn below.
+        vi.spyOn(store1, 'countOlderUserRows').mockImplementationOnce(() =>
+            Promise.reject(new Error('simulated transient rejection'))
+        );
+
+        const failingUserId = randomUUID();
+        await store1.checkIn({ userId: failingUserId, clientId: randomUUID(), scopeId: 'scope-1' });
+        // The event for this checkIn is skipped (its count query rejected) —
+        // no online event, but no thrown error either.
+        await expectNoEvent(tracked);
+
+        // A subsequent, unrelated event still flows through the same generator.
+        const userId = randomUUID();
+        await store1.checkIn({ userId, clientId: randomUUID(), scopeId: 'scope-1' });
+        const event = await expectEvent(tracked);
+        expect(event).toEqual({
+            type: 'online',
+            userId,
+            scopeId: 'scope-1',
+            key: '__default__',
+            ownedByThisServer: true,
+        });
 
         shutdown.next(true);
     });

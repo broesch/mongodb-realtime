@@ -1,6 +1,9 @@
 import type { Db } from 'mongodb';
 import type { Logger } from '../common/logger.js';
 
+/** {@link PresenceStoreOptions.collectionName}'s default — also consumed by `RealtimeModule` to default-ignore the presence collection on the hub (see realtime-module.ts). */
+export const DEFAULT_PRESENCE_COLLECTION = 'onlineUsers';
+
 /** A single client's presence row: one document per (userId, clientId, serverId). */
 export interface PresenceDoc {
     userId: string;

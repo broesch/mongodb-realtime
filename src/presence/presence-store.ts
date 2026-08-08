@@ -1,9 +1,8 @@
 import type { Collection, Db, ObjectId } from 'mongodb';
 import { enablePrePostImages } from '../core/enable-pre-post-images.js';
 import { consoleLogger, prefixed, type Logger } from '../common/logger.js';
-import type { PresenceDoc, PresenceStoreOptions } from './types.js';
+import { DEFAULT_PRESENCE_COLLECTION, type PresenceDoc, type PresenceStoreOptions } from './types.js';
 
-const DEFAULT_COLLECTION_NAME = 'onlineUsers';
 const DEFAULT_TTL_SECONDS = 300;
 
 /**
@@ -24,7 +23,7 @@ export class PresenceStore {
     constructor(options: PresenceStoreOptions) {
         this.db = options.db;
         this.serverId = options.serverId;
-        this.collectionName = options.collectionName ?? DEFAULT_COLLECTION_NAME;
+        this.collectionName = options.collectionName ?? DEFAULT_PRESENCE_COLLECTION;
         this.ttlSeconds = options.ttlSeconds ?? DEFAULT_TTL_SECONDS;
         this.logger = options.logger
             ? prefixed(options.logger, 'PresenceStore')

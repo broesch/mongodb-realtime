@@ -6,7 +6,7 @@ import type { Db } from 'mongodb';
 import { ChangeStreamHub, type ChangeStreamHubOptions } from '../core/change-stream-hub.js';
 import { ConnectionRegistry } from '../presence/connection-registry.js';
 import { PresenceStore } from '../presence/presence-store.js';
-import type { PresenceStoreOptions } from '../presence/types.js';
+import { DEFAULT_PRESENCE_COLLECTION, type PresenceStoreOptions } from '../presence/types.js';
 
 export const CHANGE_STREAM_HUB = 'MONGODB_REALTIME_HUB';
 export const PRESENCE_STORE = 'MONGODB_REALTIME_PRESENCE_STORE';
@@ -84,6 +84,21 @@ export class RealtimeLifecycle implements OnModuleInit, OnApplicationShutdown {
     }
 }
 
+/**
+ * The hub's `ignoreCollections` always includes the presence collection
+ * currently in effect (spec §4.3's promised default), so every presence
+ * `checkIn`/`keepAlive`/`checkOut`/`setPage` write doesn't force an
+ * `updateLookup` + reader iteration on the hub's shared DB-level cursor for
+ * events nobody there consumes. This is safe: `watchPresence` does NOT go
+ * through the hub — it opens its own dedicated collection-level watch — so
+ * ignoring the presence collection on the hub cannot break presence itself.
+ * Any caller-supplied `options.hub.ignoreCollections` are preserved alongside
+ * it, not replaced.
+ */
+function hubIgnoreCollections(options: RealtimeModuleOptions): string[] {
+    return [options.presence?.collectionName ?? DEFAULT_PRESENCE_COLLECTION, ...(options.hub?.ignoreCollections ?? [])];
+}
+
 function buildProviders(options: RealtimeModuleOptions): Provider[] {
     return [
         {
@@ -105,6 +120,7 @@ function buildProviders(options: RealtimeModuleOptions): Provider[] {
             useFactory: (registry: ConnectionRegistry): ChangeStreamHub =>
                 new ChangeStreamHub({
                     ...options.hub,
+                    ignoreCollections: hubIgnoreCollections(options),
                     connectedKeys:
                         options.wireHubParking !== false ? registry.connectedKeys : options.hub?.connectedKeys,
                 }),
@@ -169,6 +185,7 @@ export class RealtimeModule {
                     useFactory: (moduleOptions: RealtimeModuleOptions, registry: ConnectionRegistry): ChangeStreamHub =>
                         new ChangeStreamHub({
                             ...moduleOptions.hub,
+                            ignoreCollections: hubIgnoreCollections(moduleOptions),
                             connectedKeys:
                                 moduleOptions.wireHubParking !== false
                                     ? registry.connectedKeys

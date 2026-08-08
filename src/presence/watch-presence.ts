@@ -72,7 +72,27 @@ export async function* watchPresence(options: {
     );
 
     for await (const change of subscription) {
-        const event = await toPresenceEvent(change, store, log);
+        // `toPresenceEvent` awaits a per-event count query
+        // (`countOlderUserRows`/`countUserRows`) against the store. A
+        // transient Mongo rejection there (server-selection timeout,
+        // failover) must NOT throw out of this generator — that would kill
+        // the whole presence watcher until process restart, taking every
+        // consumer's online/offline fan-out down with it over one blip. Log
+        // and skip the event instead; the loop continues to the next change.
+        let event: PresenceEvent | undefined;
+        try {
+            event = await toPresenceEvent(change, store, log);
+        } catch (err) {
+            const doc = change as {
+                fullDocument?: { userId?: string };
+                fullDocumentBeforeChange?: { userId?: string };
+            };
+            const userId = doc.fullDocument?.userId ?? doc.fullDocumentBeforeChange?.userId;
+            log.warn(
+                `Skipping presence event (operationType=${change.operationType}, userId=${userId ?? 'unknown'}): ${(err as Error)?.message ?? String(err)}`
+            );
+            continue;
+        }
         if (event) yield event;
     }
 }
