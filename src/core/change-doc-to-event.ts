@@ -37,6 +37,7 @@ export function changeDocToEvent(
             id: toStr(change.documentKey._id) ?? '',
             scopeId: toStr(before?.[conv.scopeField]),
             ownerId: toStr(before?.[conv.ownerField]),
+            via: 'delete',
         };
     }
 
@@ -56,8 +57,15 @@ export function changeDocToEvent(
             id: toStr(doc._id) ?? '',
             scopeId,
             ownerId: toStr(doc[conv.ownerField]),
+            via: 'softDelete',
         };
     }
 
-    return { type: 'changed', scopeId, data: doc };
+    // `updateDescription` exists only on `update` — an `insert`/`replace`
+    // wrote the whole document, which `didChange` reports as having written
+    // every field.
+    const updatedFields =
+        change.operationType === 'update' ? Object.keys(change.updateDescription?.updatedFields ?? {}) : undefined;
+
+    return { type: 'changed', scopeId, data: doc, operation: change.operationType, updatedFields };
 }

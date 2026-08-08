@@ -53,7 +53,12 @@ describe('pushOwnerScoped', () => {
         const owner1Events = receivedEvents(owner1, 'doc:changed');
         const owner2Events = receivedEvents(owner2, 'doc:changed');
 
-        const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1', ownerId: 'user-1' } };
+        const event: ChangeEvent = {
+            type: 'changed',
+            scopeId: 'scope-1',
+            data: { id: '1', ownerId: 'user-1' },
+            operation: 'insert',
+        };
         await pushOwnerScoped(
             server,
             gen([event]),
@@ -80,6 +85,7 @@ describe('pushOwnerScoped', () => {
             type: 'changed',
             scopeId: 'scope-1',
             data: { id: '1', ownerId: 'user-1' },
+            operation: 'insert',
             tenant: 'tenantX',
         };
         await pushOwnerScoped(
@@ -101,7 +107,7 @@ describe('pushOwnerScoped', () => {
         await joinRoom(client, userRoom('user-1'));
         const removedEvents = receivedEvents(client, 'doc:removed');
 
-        const event: ChangeEvent = { type: 'removed', id: 'entity-1', ownerId: 'user-1' };
+        const event: ChangeEvent = { type: 'removed', id: 'entity-1', ownerId: 'user-1', via: 'delete' };
         await pushOwnerScoped(
             server,
             gen([event]),
@@ -119,7 +125,7 @@ describe('pushOwnerScoped', () => {
         const removedEvents = receivedEvents(client, 'doc:removed');
         const { logger, calls } = mockLogger();
 
-        const event: ChangeEvent = { type: 'removed', id: 'entity-1' };
+        const event: ChangeEvent = { type: 'removed', id: 'entity-1', via: 'delete' };
         await pushOwnerScoped(
             server,
             gen([event]),
@@ -138,7 +144,7 @@ describe('pushOwnerScoped', () => {
         const changedEvents = receivedEvents(client, 'doc:changed');
         const { logger, calls } = mockLogger();
 
-        const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1' } };
+        const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1' }, operation: 'insert' };
         await pushOwnerScoped(
             server,
             gen([event]),
@@ -158,8 +164,8 @@ describe('pushOwnerScoped', () => {
         const { logger, calls } = mockLogger();
 
         const events: ChangeEvent[] = [
-            { type: 'changed', scopeId: 'scope-1', data: { id: 'bad', ownerId: 'user-1' } },
-            { type: 'changed', scopeId: 'scope-1', data: { id: 'good', ownerId: 'user-1' } },
+            { type: 'changed', scopeId: 'scope-1', data: { id: 'bad', ownerId: 'user-1' }, operation: 'insert' },
+            { type: 'changed', scopeId: 'scope-1', data: { id: 'good', ownerId: 'user-1' }, operation: 'insert' },
         ];
         await pushOwnerScoped(
             server,

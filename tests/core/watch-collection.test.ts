@@ -20,7 +20,7 @@ describe('tagTenant (pure)', () => {
     }
 
     it('passes events through unchanged when tenant is undefined', async () => {
-        const event: ChangeEvent = { type: 'changed', scopeId: 'org1', data: { n: 1 } };
+        const event: ChangeEvent = { type: 'changed', scopeId: 'org1', data: { n: 1 }, operation: 'insert' };
         const tagged = tagTenant(one(event), undefined);
         const result = await tagged.next();
         expect(result.value).toEqual(event);
@@ -29,8 +29,8 @@ describe('tagTenant (pure)', () => {
 
     it('stamps every event with the given tenant', async () => {
         async function* two(): AsyncGenerator<ChangeEvent> {
-            yield { type: 'changed', scopeId: 'org1', data: { n: 1 } };
-            yield { type: 'removed', id: 'abc', scopeId: 'org1' };
+            yield { type: 'changed', scopeId: 'org1', data: { n: 1 }, operation: 'insert' };
+            yield { type: 'removed', id: 'abc', scopeId: 'org1', via: 'delete' };
         }
         const tagged = tagTenant(two(), { dbName: 'tenant-a' });
         const first = await tagged.next();
@@ -172,6 +172,35 @@ describe('watchCollection', () => {
             const result = await Promise.race([pending, delay(5_000).then(() => 'timeout' as const)]);
             if (result === 'timeout') throw new Error('generator did not end after shutdown');
             expect(result.done).toBe(true);
+        });
+
+        it('carries operation and updatedFields through to the yielded ChangeEvent', async () => {
+            const { db } = await startReplSet();
+            const name = uniqueCollection('direct-operation-fields');
+            const coll = db.collection(name);
+            const shutdown = new ValueSignal(false);
+            const events: ChangeEvent[] = [];
+
+            const watcher = watchCollection({
+                source: { watch: collectionWatchFactory(coll), db, collection: name },
+                shutdown,
+            });
+            const pump = (async () => {
+                for await (const event of watcher) {
+                    events.push(event);
+                    if (events.length === 2) break;
+                }
+            })();
+
+            await delay(300); // let the change stream open before writing
+            const { insertedId } = await coll.insertOne({ organizationId: 'org1', status: 'pending' });
+            await coll.updateOne({ _id: insertedId }, { $set: { status: 'ready' } });
+
+            await pump;
+            shutdown.next(true);
+
+            expect(events[0]).toMatchObject({ type: 'changed', operation: 'insert' });
+            expect(events[1]).toMatchObject({ type: 'changed', operation: 'update', updatedFields: ['status'] });
         });
     });
 

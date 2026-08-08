@@ -62,7 +62,12 @@ describe('pushScopedFiltered', () => {
         const allowedEvents = receivedEvents(allowed, 'doc:changed');
         const deniedEvents = receivedEvents(denied, 'doc:changed');
 
-        const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1', value: 'a' } };
+        const event: ChangeEvent = {
+            type: 'changed',
+            scopeId: 'scope-1',
+            data: { id: '1', value: 'a' },
+            operation: 'insert',
+        };
         await pushScopedFiltered(
             server,
             gen([event]),
@@ -89,7 +94,7 @@ describe('pushScopedFiltered', () => {
         const fineEvents = receivedEvents(fine, 'doc:changed');
         const { logger, calls } = mockLogger();
 
-        const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1' } };
+        const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1' }, operation: 'insert' };
         await pushScopedFiltered(
             server,
             gen([event]),
@@ -120,7 +125,7 @@ describe('pushScopedFiltered', () => {
 
         let prepareCalls = 0;
         const preparedValuesSeen: unknown[] = [];
-        const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1' } };
+        const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1' }, operation: 'insert' };
         await pushScopedFiltered(
             server,
             gen([event]),
@@ -154,7 +159,7 @@ describe('pushScopedFiltered', () => {
         const secondEvents = receivedEvents(second, 'doc:removed');
 
         let canReceiveCalls = 0;
-        const event: ChangeEvent = { type: 'removed', id: 'entity-1', scopeId: 'scope-1' };
+        const event: ChangeEvent = { type: 'removed', id: 'entity-1', scopeId: 'scope-1', via: 'delete' };
         await pushScopedFiltered(
             server,
             gen([event]),
@@ -185,7 +190,12 @@ describe('pushScopedFiltered', () => {
             const redactedEvents = receivedEvents(wantsRedacted, 'doc:changed');
 
             let renderCalls = 0;
-            const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1', ssn: '123-45-6789' } };
+            const event: ChangeEvent = {
+                type: 'changed',
+                scopeId: 'scope-1',
+                data: { id: '1', ssn: '123-45-6789' },
+                operation: 'insert',
+            };
             await pushScopedFiltered(
                 server,
                 gen([event]),
@@ -215,7 +225,7 @@ describe('pushScopedFiltered', () => {
             let watcherStarted = false;
             async function* trackedGen(): AsyncGenerator<ChangeEvent> {
                 watcherStarted = true;
-                yield { type: 'changed', scopeId: 'scope-1', data: { id: '1' } };
+                yield { type: 'changed', scopeId: 'scope-1', data: { id: '1' }, operation: 'insert' };
             }
 
             await expect(
@@ -252,6 +262,7 @@ describe('pushScopedFiltered', () => {
             type: 'changed',
             scopeId: 'scope-1',
             data: { id: '1' },
+            operation: 'insert',
             tenant: 'tenant-event',
         };
         await pushScopedFiltered(

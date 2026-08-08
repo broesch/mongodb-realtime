@@ -51,7 +51,12 @@ describe('pushScoped', () => {
         const inScopeEvents = receivedEvents(inScope, 'doc:changed');
         const otherScopeEvents = receivedEvents(otherScope, 'doc:changed');
 
-        const event: ChangeEvent = { type: 'changed', scopeId: 'scope-1', data: { id: '1', value: 'a' } };
+        const event: ChangeEvent = {
+            type: 'changed',
+            scopeId: 'scope-1',
+            data: { id: '1', value: 'a' },
+            operation: 'insert',
+        };
         await pushScoped(server, gen([event]), { changed: 'doc:changed' }, { shutdown: new ValueSignal(true) });
 
         await waitForCount(inScopeEvents, 1);
@@ -73,6 +78,7 @@ describe('pushScoped', () => {
             type: 'changed',
             scopeId: 'scope-1',
             data: { id: '1' },
+            operation: 'insert',
             tenant: 'tenantX',
         };
         await pushScoped(
@@ -94,7 +100,7 @@ describe('pushScoped', () => {
         await joinRoom(client, scopeRoom('scope-1'));
         const removedEvents = receivedEvents(client, 'doc:removed');
 
-        const event: ChangeEvent = { type: 'removed', id: 'entity-1', scopeId: 'scope-1' };
+        const event: ChangeEvent = { type: 'removed', id: 'entity-1', scopeId: 'scope-1', via: 'delete' };
         await pushScoped(
             server,
             gen([event]),
@@ -112,7 +118,7 @@ describe('pushScoped', () => {
         const removedEvents = receivedEvents(client, 'doc:removed');
         const { logger, calls } = mockLogger();
 
-        const event: ChangeEvent = { type: 'removed', id: 'entity-1' };
+        const event: ChangeEvent = { type: 'removed', id: 'entity-1', via: 'delete' };
         await pushScoped(
             server,
             gen([event]),
@@ -132,8 +138,8 @@ describe('pushScoped', () => {
         const { logger, calls } = mockLogger();
 
         const events: ChangeEvent[] = [
-            { type: 'changed', scopeId: 'scope-1', data: { id: 'bad' } },
-            { type: 'changed', scopeId: 'scope-1', data: { id: 'good' } },
+            { type: 'changed', scopeId: 'scope-1', data: { id: 'bad' }, operation: 'insert' },
+            { type: 'changed', scopeId: 'scope-1', data: { id: 'good' }, operation: 'insert' },
         ];
         await pushScoped(
             server,
