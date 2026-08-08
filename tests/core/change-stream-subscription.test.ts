@@ -26,6 +26,10 @@ function makeFakeStream(opts: {
     nextScript: Array<{ resolve: unknown } | { reject: Error }>;
     resumeToken?: unknown;
     operationTime?: Timestamp;
+    // Override the stream's `parent`. Defaults to a real `Db` instance so the
+    // production `instanceof Db` narrowing in `resolveDb` succeeds; pass a
+    // foreign-copy stand-in to exercise the duck-typed fallback instead.
+    parent?: unknown;
 }) {
     let call = 0;
     const operationTime = opts.operationTime;
@@ -37,7 +41,7 @@ function makeFakeStream(opts: {
     });
 
     const stream = {
-        parent: db,
+        parent: opts.parent !== undefined ? opts.parent : db,
         resumeToken: opts.resumeToken,
         next: vi.fn().mockImplementation(() => {
             const step = opts.nextScript[Math.min(call, opts.nextScript.length - 1)];
@@ -826,6 +830,68 @@ describe('ChangeStreamSubscription — reconnect backoff', () => {
         const result = await pending;
         expect(result.done).toBe(true);
         expect(calls.length).toBe(1); // never reopened
+    });
+});
+
+describe('ChangeStreamSubscription — resolveDb duck-typing', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    // A parent from a DIFFERENT copy of the driver fails every `instanceof`
+    // check against this package's copy, which is exactly what happens when an
+    // ODM vendors its own mongodb and the package manager doesn't dedupe.
+    let helloCalls: Record<string, unknown>[];
+    const foreignDb = {
+        admin: () => ({
+            command: (cmd: Record<string, unknown>) => {
+                helloCalls.push(cmd);
+                return Promise.resolve({ operationTime: { toString: () => 'ts1' } });
+            },
+        }),
+    };
+
+    it('captures operation time from a foreign-copy Db parent', async () => {
+        helloCalls = [];
+        const scope = new ValueSignal<number[]>([1]);
+        const shutdown = new ValueSignal(false);
+        const { stream } = makeFakeStream({ nextScript: [{ resolve: '__never__' }], parent: foreignDb });
+        const subscription = new ChangeStreamSubscription<number, never>(scope, shutdown, () => stream as never, {
+            name: 'foreign',
+        });
+
+        const iterator = subscription[Symbol.asyncIterator]();
+        const pending = iterator.next();
+        await vi.advanceTimersByTimeAsync(50);
+        shutdown.next(true);
+        await vi.advanceTimersByTimeAsync(10);
+        await pending;
+
+        expect(helloCalls).toContainEqual({ hello: 1 });
+    });
+
+    it('captures operation time from a foreign-copy Collection parent', async () => {
+        helloCalls = [];
+        const foreignCollection = { db: foreignDb };
+        const scope = new ValueSignal<number[]>([1]);
+        const shutdown = new ValueSignal(false);
+        const { stream } = makeFakeStream({ nextScript: [{ resolve: '__never__' }], parent: foreignCollection });
+        const subscription = new ChangeStreamSubscription<number, never>(scope, shutdown, () => stream as never, {
+            name: 'foreign-coll',
+        });
+
+        const iterator = subscription[Symbol.asyncIterator]();
+        const pending = iterator.next();
+        await vi.advanceTimersByTimeAsync(50);
+        shutdown.next(true);
+        await vi.advanceTimersByTimeAsync(10);
+        await pending;
+
+        expect(helloCalls).toContainEqual({ hello: 1 });
     });
 });
 

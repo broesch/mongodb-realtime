@@ -425,12 +425,34 @@ export class ChangeStreamSubscription<
      * Resolve a `Db` handle from a change stream's `parent`, which the driver
      * types as `MongoClient | Db | Collection`. We only need it to run the
      * `hello` admin command, so any database on the same client works.
+     *
+     * `instanceof` is tried first (exact, and cheap), then a structural
+     * fallback. The fallback is load-bearing rather than defensive: a consumer
+     * whose driver copy isn't deduplicated with ours — the normal case when an
+     * ODM vendors its own `mongodb` — fails every `instanceof` even though the
+     * object is a perfectly good `Db`. Without the fallback that degrades
+     * SILENTLY: no operation-time capture, so a stream that fails before
+     * yielding its first event reopens from scratch and the changes in between
+     * are lost, with nothing logged.
      */
     private resolveDb(stream: ChangeStream<Document, TChange>): Db | undefined {
         const parent: unknown = stream.parent;
         if (parent instanceof DbClass) return parent;
         if (parent instanceof Collection) return parent.db;
         if (parent instanceof MongoClient) return parent.db();
+
+        const candidate = parent as { admin?: unknown; db?: unknown } | null | undefined;
+        if (!candidate) return undefined;
+        // Db: has admin(). Collection: has a .db property that has admin().
+        // MongoClient: has a .db() method returning one.
+        if (typeof candidate.admin === 'function') return candidate as unknown as Db;
+        if (typeof candidate.db === 'function') {
+            const db = (candidate as { db: () => unknown }).db();
+            return typeof (db as { admin?: unknown })?.admin === 'function' ? (db as Db) : undefined;
+        }
+        if (typeof (candidate.db as { admin?: unknown } | undefined)?.admin === 'function') {
+            return candidate.db as Db;
+        }
         return undefined;
     }
 }
