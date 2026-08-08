@@ -22,8 +22,10 @@ import {
  * needs to know one is available." An insert or update is announced only
  * when the document's `status` is `'ready'` (gated on `didChange(event,
  * 'status')` for updates, exactly like the booking pusher's cancellation
- * gate), and the emitted DTO never carries the `slots` array — it is a
- * hand-built object, not a spread of the document.
+ * gate). The emitted DTO never carries the `slots` array — it is a
+ * hand-built object, not a spread of the document — but it DOES carry
+ * `slotCount: result.slots?.length ?? 0`: calendar sends the count instead
+ * of the array, not nothing at all.
  */
 type OptimizationResultDoc = {
     id: string;
@@ -47,6 +49,7 @@ const select = (event: ChangeEvent) => {
             optimizationResultId: doc.id,
             type: doc.type,
             bookingLinkId: doc.bookingLinkId,
+            slotCount: doc.slots?.length ?? 0,
             expiresAt: doc.expiresAt,
         },
         rooms: userRoom(doc.requestedBy),
@@ -79,7 +82,7 @@ describe('calendar contract: optimization-result pusher composition', () => {
         slots: [{ start: '2026-08-09T09:00:00.000Z', end: '2026-08-09T09:30:00.000Z' }],
     };
 
-    it('an insert that is already ready is announced with a payload that carries no slots field', async () => {
+    it('an insert that is already ready is announced with slotCount instead of the slots array', async () => {
         const requester = await connectClient(port);
         await joinRoom(requester, userRoom('u1'));
         const received = receivedEvents(requester, 'optimization:ready');
@@ -88,7 +91,13 @@ describe('calendar contract: optimization-result pusher composition', () => {
 
         await waitForCount(received, 1);
         expect(received).toEqual([
-            { optimizationResultId: 'r1', type: 'availability', bookingLinkId: 'link1', expiresAt: readyDoc.expiresAt },
+            {
+                optimizationResultId: 'r1',
+                type: 'availability',
+                bookingLinkId: 'link1',
+                slotCount: readyDoc.slots.length,
+                expiresAt: readyDoc.expiresAt,
+            },
         ]);
         expect((received[0] as { slots?: unknown }).slots).toBeUndefined();
     });

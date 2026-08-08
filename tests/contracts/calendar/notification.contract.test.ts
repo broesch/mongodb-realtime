@@ -18,25 +18,43 @@ import {
 /**
  * CONTRACT: calendar's notification pusher (apps/api/src/notification/notification.pusher.ts).
  * Uses `pushOwnerScoped`, not `pushMapped` — a notification has exactly one
- * recipient, resolved from `ownerIdOf`/`event.ownerId`, never a room list.
+ * recipient, resolved from `ownerIdOf`, and the mapped payload is the full
+ * `toNotificationPayload` shape (id, type, title, body, metadata, read,
+ * createdAt), not a partial DTO.
  *
- * NOTE ON SCOPE: the live pusher today only reacts to `insert` — per its own
+ * SCOPE: the live pusher today only reacts to `insert` — per its own
  * comment, "Only inserts matter: the sole update is `read: true`, which the
- * client originated and has already applied optimistically" — so it never
- * routes a `removed` event at all. The two `removed` cases below pin
- * `pushOwnerScoped`'s general per-owner-delete contract (the same guarantee
- * `booking`/other owner-scoped consumers rely on): a removal with an
- * `ownerId` reaches only that owner's room, and a removal missing one is
- * dropped with a warning rather than broadcast. If notification delivery
- * ever grows a delete path, this is the behavior it inherits for free.
+ * client originated and has already applied optimistically." It never
+ * watches for deletes at all. The BINDING block below covers exactly that
+ * insert path; the `removed`-event behavior of `pushOwnerScoped` is real and
+ * useful, but calendar does not exercise it through this pusher today, so it
+ * lives in the separate forward-looking block below instead of here.
  */
-type NotificationDoc = { id: string; userId: string; type: string; title: string; body: string; read?: boolean };
+type NotificationDoc = {
+    id: string;
+    userId: string;
+    type: string;
+    title: string;
+    body: string;
+    metadata?: Record<string, unknown>;
+    read?: boolean;
+    createdAt?: string;
+};
 
 const ownerIdOf = (data: unknown): string | null | undefined => (data as NotificationDoc | undefined)?.userId;
 
+// Mirrors notification.mapper.ts's toNotificationPayload exactly.
 const mapData = (data: unknown): unknown => {
     const doc = data as NotificationDoc;
-    return { id: doc.id, type: doc.type, title: doc.title, body: doc.body, read: doc.read ?? false };
+    return {
+        id: doc.id,
+        type: doc.type,
+        title: doc.title,
+        body: doc.body,
+        metadata: doc.metadata,
+        read: doc.read ?? false,
+        createdAt: new Date(doc.createdAt ?? 0).toISOString(),
+    };
 };
 
 async function* gen(events: ChangeEvent[]): AsyncGenerator<ChangeEvent> {
@@ -62,7 +80,7 @@ beforeEach(async () => ({ server, port } = await startHarness()));
 afterEach(async () => stopHarness());
 
 describe('calendar contract: notification pusher composition', () => {
-    it('an insert (the only change the live pusher reacts to) is delivered to the owner room only', async () => {
+    it('an insert (the only change the live pusher reacts to) is delivered to the owner room with the full payload', async () => {
         const owner = await connectClient(port);
         const other = await connectClient(port);
         await joinRoom(owner, userRoom('u1'));
@@ -76,6 +94,8 @@ describe('calendar contract: notification pusher composition', () => {
             type: 'booking_created',
             title: 'New booking',
             body: 'x',
+            metadata: { bookingId: 'b1' },
+            createdAt: '2026-08-09T00:00:00.000Z',
         };
         const event: ChangeEvent = { type: 'changed', scopeId: 'org1', data: doc, operation: 'insert' };
 
@@ -92,14 +112,32 @@ describe('calendar contract: notification pusher composition', () => {
 
         await waitForCount(ownerEvents, 1);
         expect(ownerEvents).toEqual([
-            { id: 'n1', type: 'booking_created', title: 'New booking', body: 'x', read: false },
+            {
+                id: 'n1',
+                type: 'booking_created',
+                title: 'New booking',
+                body: 'x',
+                metadata: { bookingId: 'b1' },
+                read: false,
+                createdAt: '2026-08-09T00:00:00.000Z',
+            },
         ]);
 
         await delay(200);
         expect(otherEvents).toHaveLength(0);
     });
+});
 
-    it('a removed event with an ownerId emits the bare id to that owner room, general pushOwnerScoped contract', async () => {
+// Exempt from this suite's coordination rule (see ./README.md): these pin
+// `pushOwnerScoped`'s general per-owner-delete contract, the same guarantee
+// other owner-scoped consumers rely on — but calendar's live
+// NotificationPusher never reaches this branch (it only handles `insert`,
+// see the SCOPE note above). A red test here means the shared primitive
+// changed, not that calendar broke; it does not by itself require
+// coordinating with the calendar repo. Kept as forward-looking coverage for
+// if/when notification delivery grows a delete path.
+describe('forward-looking (not yet used by calendar — non-binding)', () => {
+    it('a removed event with an ownerId emits the bare id to that owner room', async () => {
         const owner = await connectClient(port);
         await joinRoom(owner, userRoom('u1'));
         const removedEvents = receivedEvents(owner, 'notification:removed');

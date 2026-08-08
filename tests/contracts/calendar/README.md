@@ -32,6 +32,29 @@ routing/gating rule it pins, quoting the calendar pusher's own comments
 where that rule is explained (e.g. "Calendar events are personal — never
 broadcast them to the org room").
 
+## Not every `it` in these files is binding
+
+Two files carry cases calendar does not currently exercise:
+
+- `notification.contract.test.ts` has a `describe('forward-looking (not yet
+used by calendar — non-binding)', …)` block. The live `NotificationPusher`
+  only ever reacts to `insert`; the general `pushOwnerScoped` per-owner
+  removal behavior tested there (bare id to the owner room when `ownerId` is
+  present, dropped-with-a-warning when it's not) is real and worth pinning,
+  but calendar has no delete path to break.
+- `presence.contract.test.ts` doesn't import this library at all yet —
+  calendar's `online-user.pusher.ts` hand-rolls the same composition
+  directly against Mongoose. The whole file pins the _library-side
+  equivalence_ the eventual migration will rely on, not an already-wired
+  integration; its header spells this out.
+
+A red test inside a block explicitly marked non-binding/forward-looking does
+**not** by itself trigger the coordination rule below — it means the shared
+primitive's general contract changed, which is still worth knowing, but
+there is no live calendar behavior to go coordinate about. Everything
+outside such a block is binding: calendar runs it today, and a red test
+there does trigger the rule.
+
 ## Coordination rule
 
 **A change that fails a contract test must be coordinated with the calendar

@@ -16,29 +16,34 @@ import {
 
 /**
  * CONTRACT: calendar's booking pusher (apps/api/src/booking/booking.pusher.ts).
- * A booking insert announces 'booking:created'; an update announces
- * 'booking:cancelled' only when the write actually touched `status` and the
- * document now says cancelled; recipients are every participant's user room
- * PLUS the org room, with a socket in several of those rooms receiving
- * exactly one copy.
+ * `resolveTransition` has THREE outcomes, not two: a booking insert
+ * announces 'booking:created'; an update whose write touched `status`
+ * announces 'booking:cancelled' when the document now says cancelled, OR
+ * 'meeting:rescheduled' when it says rescheduled — any other status (or a
+ * status-less field write) is silent. Recipients are every participant's
+ * user room PLUS the org room, but the org room is conditional
+ * (`if (booking.organizationId)` in the source — a booking can be orgless),
+ * with a socket in several of those rooms receiving exactly one copy.
  */
-type BookingDoc = { id: string; status: string; participants: string[]; organizationId: string };
+type BookingDoc = { id: string; status: string; participants: string[]; organizationId?: string };
 
 const select = (event: ChangeEvent) => {
     if (event.type !== 'changed') return null;
     const doc = event.data as BookingDoc;
-    const rooms = [...doc.participants.map(userRoom), scopeRoom(doc.organizationId)];
+    const rooms = doc.participants.map(userRoom);
+    if (doc.organizationId) rooms.push(scopeRoom(doc.organizationId)); // mirrors `if (booking.organizationId)`
     if (event.operation === 'insert') return { name: 'booking:created', payload: { id: doc.id }, rooms };
-    if (didChange(event, 'status') && doc.status === 'cancelled')
-        return { name: 'booking:cancelled', payload: { id: doc.id }, rooms };
-    return null; // an update that didn't flip status is not announced
+    if (!didChange(event, 'status')) return null; // an update that didn't flip status is not announced
+    if (doc.status === 'cancelled') return { name: 'booking:cancelled', payload: { id: doc.id }, rooms };
+    if (doc.status === 'rescheduled') return { name: 'meeting:rescheduled', payload: { id: doc.id }, rooms };
+    return null;
 };
 
 const changed = (
     doc: BookingDoc,
     operation: 'insert' | 'update' | 'replace',
     updatedFields?: string[]
-): ChangeEvent => ({ type: 'changed', scopeId: doc.organizationId, data: doc, operation, updatedFields });
+): ChangeEvent => ({ type: 'changed', scopeId: doc.organizationId ?? '', data: doc, operation, updatedFields });
 
 async function* gen(events: ChangeEvent[]): AsyncGenerator<ChangeEvent> {
     for (const event of events) yield event;
@@ -100,5 +105,37 @@ describe('calendar contract: booking pusher composition', () => {
 
         await waitForCount(received, 1);
         expect(received).toEqual([{ id: 'b1' }]);
+    });
+
+    it('an update whose status flips to rescheduled announces meeting:rescheduled — resolveTransition’s third outcome', async () => {
+        const orgMember = await connectClient(port);
+        await joinRoom(orgMember, scopeRoom('org1'));
+        const received = receivedEvents(orgMember, 'meeting:rescheduled');
+
+        const rescheduledDoc: BookingDoc = { ...doc, status: 'rescheduled' };
+        await pushMapped(server, gen([changed(rescheduledDoc, 'update', ['status'])]), select, {
+            shutdown: new ValueSignal(true),
+        });
+
+        await waitForCount(received, 1);
+        expect(received).toEqual([{ id: 'b1' }]);
+    });
+
+    it('a booking with no organizationId omits the org room — only its participants are addressed', async () => {
+        const participant = await connectClient(port);
+        const orgMember = await connectClient(port);
+        await joinRoom(participant, userRoom('u1'));
+        await joinRoom(orgMember, scopeRoom('org1'));
+        const participantEvents = receivedEvents(participant, 'booking:created');
+        const orgEvents = receivedEvents(orgMember, 'booking:created');
+
+        const orphanDoc: BookingDoc = { id: 'b2', status: 'pending', participants: ['u1'] };
+        await pushMapped(server, gen([changed(orphanDoc, 'insert')]), select, { shutdown: new ValueSignal(true) });
+
+        await waitForCount(participantEvents, 1);
+        expect(participantEvents).toEqual([{ id: 'b2' }]);
+
+        await delay(200);
+        expect(orgEvents).toHaveLength(0);
     });
 });
