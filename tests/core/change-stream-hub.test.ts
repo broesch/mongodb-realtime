@@ -273,6 +273,45 @@ describe('ChangeStreamHub', () => {
         });
     });
 
+    describe('ignored collections filtered server-side in the $match pipeline', () => {
+        it('does not deliver changes from an ignored collection', async () => {
+            const { db } = await startReplSet();
+            const key = uniqueCollection('pipeline-ignore-key');
+            const watched = uniqueCollection('pipeline-watched');
+            const ignored = uniqueCollection('pipeline-ignored');
+
+            // Regression pin for the $match-pipeline filter, not a new
+            // capability: the reader-loop check already produced this
+            // behaviour before the pipeline change, and must keep producing
+            // it now that the ignored collection is filtered server-side.
+            const hub = new ChangeStreamHub({ ignoreCollections: [ignored] });
+            const gen = trackNext(hub.subscribe(key, db, watched));
+            await waitForStreamOpen(hub, db, key);
+
+            await db.collection(ignored).insertOne({ n: 'should-not-arrive' });
+            await db.collection(watched).insertOne({ n: 'should-arrive' });
+
+            const result = await expectEvent(gen);
+            expect(coll(result)).toBe(watched);
+            expect(n(result)).toBe('should-arrive');
+
+            await hub.close();
+        });
+
+        it('subscribe() after close() throws instead of returning a dead generator', async () => {
+            const { db } = await startReplSet();
+            const key = uniqueCollection('post-close-key');
+
+            const hub = new ChangeStreamHub();
+            hub.subscribe(key, db, uniqueCollection('post-close-coll-a'));
+            await hub.close();
+
+            expect(() =>
+                hub.subscribe(uniqueCollection('post-close-key-2'), db, uniqueCollection('post-close-coll-b'))
+            ).toThrow(/closed/i);
+        });
+    });
+
     describe('multi-key isolation', () => {
         it('two keys on two different databases each deliver only their own events', async () => {
             const { client, db: dbA } = await startReplSet();

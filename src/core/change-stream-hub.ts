@@ -100,6 +100,7 @@ export class ChangeStreamHub {
     // stream is then always open and `reconcile()` is a no-op.
     private connected: Set<string> | undefined;
     private readonly connectedSub: { unsubscribe(): void } | undefined;
+    private closed = false;
 
     constructor(private readonly options: ChangeStreamHubOptions = {}) {
         this.log = prefixed(options.logger ?? consoleLogger, ChangeStreamHub.name);
@@ -126,6 +127,13 @@ export class ChangeStreamHub {
      * key shares that one DB-level `db.watch()`.
      */
     subscribe(key: string, db: Db, collectionName: string): AsyncGenerator<ChangeStreamDocument> {
+        if (this.closed) {
+            // Terminal by design: after close() the reader loops are gone, so
+            // a new subscription would either open an untracked cursor
+            // (new key) or hand back a generator parked forever on a closed
+            // fanout (existing key). Fail loudly instead.
+            throw new Error('ChangeStreamHub is closed — subscribe() is not valid after close()');
+        }
         const stream = this.ensureStream(key, db);
         let fan = stream.fanouts.get(collectionName);
         if (!fan) {
@@ -142,6 +150,8 @@ export class ChangeStreamHub {
     private ensureStream(key: string, db: Db): HubStream {
         const existing = this.streams.get(key);
         if (existing) return existing;
+
+        const ignored = [...this.ignoreCollections];
 
         // Start open only if the key is already connected — or unconditionally
         // when no `connectedKeys` signal was supplied at all; otherwise start
@@ -163,6 +173,16 @@ export class ChangeStreamHub {
                                 operationType: {
                                     $in: ['insert', 'update', 'replace', 'delete'],
                                 },
+                                // Filter ignored collections HERE, not in the
+                                // reader loop: a DB-level watch produces a
+                                // change document (with an `updateLookup`
+                                // full document) for every write in the whole
+                                // database, so filtering after the fact still
+                                // pays the server-side lookup and the
+                                // transport for collections nobody consumes.
+                                // The reader-loop check below stays as the
+                                // backstop for collections with no fanout.
+                                ...(ignored.length > 0 ? { 'ns.coll': { $nin: ignored } } : {}),
                             },
                         },
                     ],
@@ -258,6 +278,7 @@ export class ChangeStreamHub {
      * await every reader loop's orderly exit.
      */
     async close(): Promise<void> {
+        this.closed = true;
         this.connectedSub?.unsubscribe();
         for (const s of this.streams.values()) {
             // Clear any pending grace-close so it can't fire (and touch scope$)
