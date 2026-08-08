@@ -1,7 +1,7 @@
 import type { Server } from 'socket.io';
 import type { ChangeEvent } from '../core/change-event.js';
 import { consoleLogger, prefixed } from '../common/logger.js';
-import { namespacedRoom, scopeRoom } from './rooms.js';
+import { namespacedRoom, scopeRoom, toRooms } from './rooms.js';
 import type { PushEvents, PushScopedOptions } from './types.js';
 
 /**
@@ -31,6 +31,14 @@ export async function pushScoped<TTenant>(
                 // practice and exists only to satisfy the union's optional field.
                 scopeRoom(event.scopeId ?? '')
             ));
+    const roomsFor = (event: ChangeEvent<TTenant>, eventName: string): string[] | null => {
+        const rooms = toRooms(roomOf(event));
+        if (rooms.length === 0) {
+            log.warn(`Dropping ${eventName} — roomOf resolved no rooms to address`);
+            return null;
+        }
+        return rooms;
+    };
 
     for await (const event of watcher) {
         if (event.type === 'removed') {
@@ -42,7 +50,9 @@ export async function pushScoped<TTenant>(
                 log.warn(`Dropping ${events.removed} for id=${event.id} — no scopeId on the change event`);
                 continue;
             }
-            server.to(roomOf(event)).emit(events.removed, event.id);
+            const rooms = roomsFor(event, events.removed);
+            if (!rooms) continue;
+            server.to(rooms).emit(events.removed, event.id);
         } else {
             let payload: unknown;
             try {
@@ -53,7 +63,9 @@ export async function pushScoped<TTenant>(
                 );
                 continue;
             }
-            server.to(roomOf(event)).emit(events.changed, payload);
+            const rooms = roomsFor(event, events.changed);
+            if (!rooms) continue;
+            server.to(rooms).emit(events.changed, payload);
         }
     }
     // If the watcher completes without `shutdown` being set, that's a bug in

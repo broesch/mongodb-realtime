@@ -182,4 +182,49 @@ describe('pushScoped', () => {
 
         expect(calls.some(c => c.level === 'error' && c.message.includes('before shutdown'))).toBe(false);
     });
+
+    it('roomOf returning several rooms delivers one copy to a socket in two of them', async () => {
+        const client = await connectClient(port);
+        await joinRoom(client, scopeRoom('org1'));
+        await joinRoom(client, 'extra-room');
+        const received = receivedEvents(client, 'doc:changed');
+
+        const event: ChangeEvent = { type: 'changed', scopeId: 'org1', data: { v: 1 }, operation: 'insert' };
+        await pushScoped(
+            server,
+            gen([event]),
+            { changed: 'doc:changed' },
+            {
+                shutdown: new ValueSignal(true),
+                roomOf: () => [scopeRoom('org1'), 'extra-room'],
+            }
+        );
+
+        await waitForCount(received, 1);
+        await delay(200);
+        expect(received).toHaveLength(1);
+    });
+
+    it('drops an event whose roomOf resolves to no rooms rather than broadcasting', async () => {
+        const client = await connectClient(port);
+        await joinRoom(client, scopeRoom('org1'));
+        const received = receivedEvents(client, 'doc:changed');
+        const { logger, calls } = mockLogger();
+
+        const event: ChangeEvent = { type: 'changed', scopeId: 'org1', data: { v: 1 }, operation: 'insert' };
+        await pushScoped(
+            server,
+            gen([event]),
+            { changed: 'doc:changed' },
+            {
+                shutdown: new ValueSignal(true),
+                roomOf: () => [],
+                logger,
+            }
+        );
+
+        await delay(300);
+        expect(received).toHaveLength(0);
+        expect(calls.some(c => c.level === 'warn' && c.message.includes('no rooms'))).toBe(true);
+    });
 });

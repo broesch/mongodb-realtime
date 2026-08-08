@@ -12,8 +12,14 @@ export interface PushEvents {
 export interface PushScopedOptions<TTenant> {
     /** Signals a graceful shutdown in progress; suppresses the "watcher returned early" error log. */
     shutdown: ReadonlySignal<boolean>;
-    /** Room an event fans out to. Default: `namespacedRoom(tenantNamespace?.(tenant), scopeRoom(scopeId))`. */
-    roomOf?: (event: ChangeEvent<TTenant>) => string;
+    /**
+     * Room(s) an event fans out to. Default:
+     * `namespacedRoom(tenantNamespace?.(tenant), scopeRoom(scopeId))`.
+     * Returning a list emits once to all of them in a single `to()` call, so
+     * a socket in several receives one copy; returning an empty list drops
+     * the event (emitting to no rooms would broadcast to everyone).
+     */
+    roomOf?: (event: ChangeEvent<TTenant>) => string | string[];
     /** Derives the room namespace (e.g. tenant DB name) from the opaque tenant carried on the event. */
     tenantNamespace?: (tenant: TTenant) => string | undefined;
     /**

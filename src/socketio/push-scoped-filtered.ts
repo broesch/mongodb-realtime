@@ -1,7 +1,7 @@
 import type { RemoteSocket, Server } from 'socket.io';
 import type { ChangeEvent } from '../core/change-event.js';
 import { consoleLogger, prefixed } from '../common/logger.js';
-import { namespacedRoom, scopeRoom } from './rooms.js';
+import { namespacedRoom, scopeRoom, toRooms } from './rooms.js';
 import type { PushEvents, PushScopedFilteredOptions } from './types.js';
 
 /**
@@ -73,6 +73,14 @@ export async function pushScopedFiltered<TTenant>(
                 event.tenant !== undefined ? options.tenantNamespace?.(event.tenant) : undefined,
                 scopeRoom(event.scopeId ?? '')
             ));
+    const roomsFor = (event: ChangeEvent<TTenant>, eventName: string): string[] | null => {
+        const rooms = toRooms(roomOf(event));
+        if (rooms.length === 0) {
+            log.warn(`Dropping ${eventName} — roomOf resolved no rooms to address`);
+            return null;
+        }
+        return rooms;
+    };
 
     for await (const event of watcher) {
         if (event.type === 'removed') {
@@ -90,12 +98,15 @@ export async function pushScopedFiltered<TTenant>(
             // Emit the bare id to the whole room instead — exactly like
             // `pushScoped`'s removed path: an id leaks no entity data, and
             // any client holding the entity drops it.
-            server.to(roomOf(event)).emit(events.removed, event.id);
+            const rooms = roomsFor(event, events.removed);
+            if (!rooms) continue;
+            server.to(rooms).emit(events.removed, event.id);
             continue;
         }
 
-        const room = roomOf(event);
-        const sockets = await server.in(room).fetchSockets();
+        const rooms = roomsFor(event, events.changed);
+        if (!rooms) continue;
+        const sockets = await server.in(rooms).fetchSockets();
 
         // `mapData`/`variants.render` and `prepareEvent` may be async AND
         // tenant-scoped. The fan-out loop has no ambient context of its own,
