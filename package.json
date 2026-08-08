@@ -43,6 +43,7 @@
     "typecheck": "tsc --noEmit",
     "api:update": "node scripts/api-report.mjs",
     "api:check": "node scripts/api-report.mjs --verify",
+    "prepare": "tsup",
     "prepublishOnly": "pnpm build"
   },
   "peerDependencies": {
