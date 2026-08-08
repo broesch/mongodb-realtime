@@ -17,7 +17,14 @@ export class SocketServerHandle {
         this.resolveReady = resolve;
     });
 
-    /** Call from the gateway's `afterInit(server)`. Idempotent; a re-set replaces the handle for later readers. */
+    /**
+     * Call from the gateway's `afterInit(server)`. Idempotent; a re-set replaces
+     * the handle for later readers of `get()`/`isReady()`, which always reflect
+     * the LATEST server passed here. `whenReady()` is the odd one out: its
+     * promise resolves permanently to the FIRST server ever set — a later
+     * re-set does not re-resolve it, so a caller already past its
+     * `await whenReady()` keeps whichever server it first got, not this one.
+     */
     setServer(server: Server): void {
         this.server = server;
         // Resolving an already-resolved promise is a no-op, so a re-set never

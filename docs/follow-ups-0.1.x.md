@@ -3,9 +3,9 @@
 All ship-safe (triaged by the final whole-branch review); scheduled for 0.1.x or the adoption projects.
 
 ## API hardening
-- `ChangeStreamHub.close()` is terminal but unguarded: a post-close `subscribe()` on a new key opens an untracked cursor; on an existing key it hands back a dead generator that hangs. Add a `closed` flag that throws on `subscribe()` (~5 lines).
-- `ChangeStreamEventPusher`: chain `.then(() => this.loopEnded())` on the bootstrap promise so a subclass loop that *resolves* without calling `loopEnded()` cannot hang shutdown (today only the rejection path is latched; README documents the subclass obligation).
-- `resolveDb`'s `instanceof` checks against the library's own `mongodb` copy degrade silently (no operation-time capture) when a consumer has a duplicated driver copy — **do the duck-type fallback before fm migrates** (mongoose vendors its own driver; pnpm may not dedupe).
+- ~~`ChangeStreamHub.close()` is terminal but unguarded: a post-close `subscribe()` on a new key opens an untracked cursor; on an existing key it hands back a dead generator that hangs. Add a `closed` flag that throws on `subscribe()` (~5 lines).~~ **Done — Task 8 (0.2.0):** `close()` now sets a terminal flag; `subscribe()` throws after close instead of opening an untracked cursor or handing back a dead generator.
+- ~~`ChangeStreamEventPusher`: chain `.then(() => this.loopEnded())` on the bootstrap promise so a subclass loop that *resolves* without calling `loopEnded()` cannot hang shutdown (today only the rejection path is latched; README documents the subclass obligation).~~ **Done — Task 5 (0.2.0):** the bootstrap chain now calls `loopEnded()` from a `.finally()`, latching on either settlement; `loopEnded()` is idempotent so a subclass's own call in its loop's `finally` no longer conflicts.
+- ~~`resolveDb`'s `instanceof` checks against the library's own `mongodb` copy degrade silently (no operation-time capture) when a consumer has a duplicated driver copy — **do the duck-type fallback before fm migrates** (mongoose vendors its own driver; pnpm may not dedupe).~~ **Done — Task 9 (0.2.0):** added a structural (duck-type) fallback after the `instanceof` checks, recognizing Db-/MongoClient-/Collection-shaped parents from any driver copy.
 
 ## Adoption notes (carry into calendar/fm migration plans)
 - `pushScopedFiltered`'s per-socket `runInContext` wrap keys on hook presence, not tenant value: fm's adapter must be `(ctx, fn) => ctx.tenant ? cls.run(...) : fn()` to preserve no-CLS-for-tenantless-sockets (JSDoc on the option documents this).
