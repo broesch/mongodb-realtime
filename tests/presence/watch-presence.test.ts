@@ -57,6 +57,7 @@ describe('watchPresence', () => {
             scopeId: 'scope-1',
             key: '__default__',
             ownedByThisServer: true,
+            meta: {},
         });
 
         shutdown.next(true);
@@ -129,6 +130,7 @@ describe('watchPresence', () => {
             scopeId: 'scope-1',
             key: '__default__',
             ownedByThisServer: true,
+            meta: {},
         });
 
         shutdown.next(true);
@@ -150,6 +152,7 @@ describe('watchPresence', () => {
             scopeId: 'scope-2',
             key: '__default__',
             ownedByThisServer: false,
+            meta: {},
         });
 
         shutdown.next(true);
@@ -206,7 +209,63 @@ describe('watchPresence', () => {
             scopeId: 'scope-1',
             key: '__default__',
             ownedByThisServer: true,
+            meta: {},
         });
+
+        shutdown.next(true);
+    });
+
+    it('yields an activity event carrying the new page when setPage writes it', async () => {
+        const { store1 } = await makeStores();
+        const shutdown = new ValueSignal(false);
+        const tracked = trackNext(watchPresence({ store: store1, shutdown }));
+        await waitForWatchOpen(tracked, store1);
+
+        const userId = randomUUID();
+        const clientId = randomUUID();
+        await store1.checkIn({ userId, clientId, scopeId: 'scope-1' });
+        await expectEvent(tracked); // the online event
+
+        await store1.setPage(userId, clientId, '/calendar');
+
+        const event = await expectEvent(tracked);
+        expect(event).toMatchObject({ type: 'activity', userId, scopeId: 'scope-1', page: '/calendar' });
+
+        shutdown.next(true);
+    });
+
+    it('does not yield an activity event for a keepAlive, which only writes lastSeen', async () => {
+        const { store1 } = await makeStores();
+        const shutdown = new ValueSignal(false);
+        const tracked = trackNext(watchPresence({ store: store1, shutdown }));
+        await waitForWatchOpen(tracked, store1);
+
+        const userId = randomUUID();
+        const clientId = randomUUID();
+        await store1.checkIn({ userId, clientId, scopeId: 'scope-1' });
+        await expectEvent(tracked); // the online event
+
+        await store1.keepAlive(userId, clientId);
+        await expectNoEvent(tracked);
+
+        shutdown.next(true);
+    });
+
+    it('threads the row meta onto online and offline events', async () => {
+        const { store1 } = await makeStores();
+        const shutdown = new ValueSignal(false);
+        const tracked = trackNext(watchPresence({ store: store1, shutdown }));
+        await waitForWatchOpen(tracked, store1);
+
+        const userId = randomUUID();
+        const clientId = randomUUID();
+        await store1.checkIn({ userId, clientId, scopeId: 'scope-1', meta: { email: 'a@b.c' } });
+        const online = await expectEvent(tracked);
+        expect(online).toMatchObject({ type: 'online', meta: { email: 'a@b.c' } });
+
+        await store1.checkOut(userId, clientId);
+        const offline = await expectEvent(tracked);
+        expect(offline).toMatchObject({ type: 'offline', meta: { email: 'a@b.c' } });
 
         shutdown.next(true);
     });

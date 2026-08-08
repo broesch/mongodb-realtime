@@ -4,14 +4,24 @@ import { collectionWatchFactory } from '../core/watch-collection.js';
 import { consoleLogger, prefixed, type Logger } from '../common/logger.js';
 import { ValueSignal, type ReadonlySignal } from '../common/signal.js';
 import type { PresenceStore } from './presence-store.js';
-import type { PresenceDoc } from './types.js';
+import { DEFAULT_ACTIVITY_FIELDS, type PresenceDoc } from './types.js';
 
 export interface PresenceEvent {
-    type: 'online' | 'offline';
+    /**
+     * `online`/`offline` are 0→1 / 1→0 transitions for the user as a whole.
+     * `activity` is a write to one of the watched activity fields (by default
+     * `page`) on an already-online connection — it is per-connection, not a
+     * transition, so a user with three tabs can produce three of them.
+     */
+    type: 'online' | 'offline' | 'activity';
     userId: string;
     scopeId: string;
     key: string;
     ownedByThisServer: boolean;
+    /** Application metadata from the presence row (`PresenceStore.checkIn({ meta })`). */
+    meta?: Record<string, unknown>;
+    /** The row's current `page`. Always present on `activity`; present on `online`/`offline` when the row carried one. */
+    page?: string;
 }
 
 /**
@@ -42,12 +52,22 @@ export interface PresenceEvent {
  * "is this user online" a second `offline` while already offline is a no-op,
  * whereas a missed `online` (the insert failure mode above) is not.
  *
- * update/replace (keepalive/setPage) → no event.
+ * update/replace → `activity` iff the write touched one of `activityFields`
+ * (default `['page']`); a `replace` always counts (it rewrites the whole
+ * row), an `update` only counts if `updateDescription.updatedFields` names a
+ * watched field — a keepAlive writes only `lastSeen` and yields nothing.
  */
 export async function* watchPresence(options: {
     store: PresenceStore;
     shutdown: ReadonlySignal<boolean>;
     logger?: Logger;
+    /**
+     * Fields whose write yields an `activity` event. Defaults to `['page']`.
+     * Deliberately NOT "any update": every keepAlive writes `lastSeen`, so an
+     * unfiltered update branch would emit an activity event per heartbeat per
+     * connection.
+     */
+    activityFields?: string[];
 }): AsyncGenerator<PresenceEvent> {
     const log = prefixed(options.logger ?? consoleLogger, 'watchPresence');
     const { store } = options;
@@ -81,7 +101,7 @@ export async function* watchPresence(options: {
         // and skip the event instead; the loop continues to the next change.
         let event: PresenceEvent | undefined;
         try {
-            event = await toPresenceEvent(change, store, log);
+            event = await toPresenceEvent(change, store, log, options.activityFields ?? DEFAULT_ACTIVITY_FIELDS);
         } catch (err) {
             const doc = change as {
                 fullDocument?: { userId?: string };
@@ -100,7 +120,8 @@ export async function* watchPresence(options: {
 async function toPresenceEvent(
     change: ChangeStreamDocument<Document>,
     store: PresenceStore,
-    log: Logger
+    log: Logger,
+    activityFields: string[]
 ): Promise<PresenceEvent | undefined> {
     switch (change.operationType) {
         case 'insert': {
@@ -118,6 +139,8 @@ async function toPresenceEvent(
                 scopeId: doc.scopeId,
                 key: doc.key,
                 ownedByThisServer: doc.serverId === store.serverId,
+                meta: doc.meta,
+                page: doc.page,
             };
         }
         case 'delete': {
@@ -133,10 +156,39 @@ async function toPresenceEvent(
                 scopeId: before.scopeId,
                 key: before.key,
                 ownedByThisServer: before.serverId === store.serverId,
+                meta: before.meta,
+                page: before.page,
+            };
+        }
+        case 'update':
+        case 'replace': {
+            const doc = change.fullDocument as PresenceDoc | undefined;
+            if (!doc || !doc.userId) return undefined;
+            // A `replace` carries no updateDescription but rewrites the whole
+            // row, so it counts as having written the activity fields; an
+            // `update` must have touched one of them, or this is a keepAlive
+            // (lastSeen only) and there is nothing to announce.
+            if (change.operationType === 'update') {
+                const written = Object.keys(
+                    (change as { updateDescription?: { updatedFields?: Record<string, unknown> } }).updateDescription
+                        ?.updatedFields ?? {}
+                );
+                const touched = written.some(field =>
+                    activityFields.some(watched => field === watched || field.startsWith(`${watched}.`))
+                );
+                if (!touched) return undefined;
+            }
+            return {
+                type: 'activity',
+                userId: doc.userId,
+                scopeId: doc.scopeId,
+                key: doc.key,
+                ownedByThisServer: doc.serverId === store.serverId,
+                meta: doc.meta,
+                page: doc.page,
             };
         }
         default:
-            // update/replace (keepalive, setPage) carry no transition.
             return undefined;
     }
 }
