@@ -75,10 +75,21 @@ export function collectionWatchFactory(coll: Collection): (options: ResumeOption
 export const consoleLogger: Logger;
 
 // @public
+export interface DbResolver {
+    // (undocumented)
+    dbFor(key: string): Db;
+    // (undocumented)
+    keys(): string[];
+}
+
+// @public
 export function deepEqual(a: unknown, b: unknown): boolean;
 
 // @public (undocumented)
 export const DEFAULT_CONVENTIONS: Required<ChangeEventConventions>;
+
+// @public
+export const DEFAULT_KEY = "__default__";
 
 // @public
 export function delayUnlessStopped(ms: number, stop: Promise<unknown>): Promise<'elapsed' | 'stopped'>;
@@ -185,6 +196,9 @@ export function subscribeToChanges<T>(signal: ReadonlySignal<T>, listener: (valu
 
 // @public
 export function tagTenant<TTenant>(source: AsyncGenerator<ChangeEvent<TTenant>>, tenant: TTenant | undefined): AsyncGenerator<ChangeEvent<TTenant>>;
+
+// @public
+export function toDbResolver(source: Db | DbResolver): DbResolver;
 
 // @public
 export class ValueSignal<T> implements Signal<T> {
