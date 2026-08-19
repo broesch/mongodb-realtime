@@ -1,4 +1,5 @@
 import type { Db } from 'mongodb';
+import type { DbResolver } from '../core/db-resolver.js';
 import type { Logger } from '../common/logger.js';
 
 /** {@link PresenceStoreOptions.collectionName}'s default — also consumed by `RealtimeModule` to default-ignore the presence collection on the hub (see realtime-module.ts). */
@@ -13,14 +14,19 @@ export interface PresenceDoc {
     clientId: string;
     serverId: string;
     scopeId: string;
-    key: string; // tenant key, '__default__' when single-DB
+    key: string; // tenant key, DEFAULT_KEY when single-DB
     lastSeen: Date;
     page?: string;
     meta?: Record<string, unknown>;
 }
 
 export interface PresenceStoreOptions {
-    db: Db;
+    /**
+     * One database, or a resolver spanning several keyed databases. A bare
+     * `Db` behaves exactly as before: every method's optional `key` argument
+     * can be omitted and resolves to that single database.
+     */
+    db: Db | DbResolver;
     serverId: string;
     collectionName?: string; // default 'onlineUsers'
     ttlSeconds?: number; // default 300
