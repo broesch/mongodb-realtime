@@ -103,9 +103,9 @@ async function* watchPresenceKey(
     // constant-scope pattern used by `watchCollection`'s `directLoop`,
     // `ChangeStreamSubscription` never unsubscribes its own scope listener on
     // normal completion, so a shared instance would accumulate one
-    // permanently-retained listener per `watchPresence` call for the life of
-    // the process. A fresh `[1]` signal per call is cheap and behaves
-    // identically since its value is never mutated.
+    // permanently-retained listener per key, per `watchPresence` call (N keys
+    // × M calls) for the life of the process. A fresh `[1]` signal per call is
+    // cheap and behaves identically since its value is never mutated.
     const scope = new ValueSignal<number[]>([1]);
     const subscription = new ChangeStreamSubscription<number, ChangeStreamDocument<Document>>(
         scope,

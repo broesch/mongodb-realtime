@@ -15,7 +15,7 @@ Multi-node realtime today needs a pub/sub bus so every server process sees every
 - **Presence** — `PresenceStore` (TTL'd `onlineUsers` collection, atomic check-in with DB-arbitrated race resolution, an app-defined `meta` bag passed through to every event), `ConnectionRegistry` (per-node connected-scope/-key signals), `watchPresence` (cross-node 0→1/1→0 online/offline transition detection, plus a per-connection `activity` event on writes to configurable tracked fields — default `page` — for already-online connections)
 - **Socket.io fan-out** — `pushScoped`, `pushOwnerScoped`, `pushScopedFiltered` (per-recipient permission filtering + two-variant PII rendering), `pushMapped` (consumer picks the event name, payload and room(s) per event, or skips it); shared room-naming helpers so join and emit sites can't disagree — `roomOf`/`pushMapped`'s `rooms` may resolve to several rooms, emitted in one `to()` call so a socket in more than one gets exactly one copy
 - **NestJS binding** — `RealtimeModule.forRoot/forRootAsync` wires the hub/presence-store/connection-registry/`REALTIME_ENABLED`/`SOCKET_SERVER` behind injection tokens; `ChangeStreamEventPusher` is a lifecycle base whose shutdown latch resolves on either settlement of a subclass's loop — a crash or a normal return — so a pusher can't hang shutdown either way, plus an `enabled` gate and a `watchOne` helper for consumers that need the raw change document; `assertChangeStreamPreflight` fails boot fast with an actionable message on a non-replica-set deployment
-- **Zero runtime dependencies** — `mongodb` is a wide peer (`^5.7 || ^6 || ^7`); `socket.io` and `@nestjs/common` are optional peers, imported type-only
+- **Zero runtime dependencies** — `mongodb` is a wide peer (`^5.7 || ^6 || ^7`); `socket.io` and `@nestjs/common` are optional peers. `socket.io` is imported type-only everywhere. `@nestjs/common` is type-only too, **except** `mongodb-realtime/nestjs`'s `nestLogger` helper, which imports `Logger` from it as a value (to construct a default logger when no `impl` is supplied) — importing that subpath without `@nestjs/common` installed throws `MODULE_NOT_FOUND` at load time, not just at the point you call `nestLogger`
 - **Framework-agnostic core** — the engine (`ChangeStreamSubscription`, `ChangeStreamHub`, `watchCollection`) has no socket.io or NestJS dependency; those are opt-in subpaths
 
 ## Requirements
@@ -45,6 +45,8 @@ pnpm add socket.io          # only if you use mongodb-realtime/socketio
 pnpm add @nestjs/common     # only if you use mongodb-realtime/nestjs
 ```
 
+`mongodb-realtime/mongoose` needs nothing installed at all: it reads `MongooseModelLike` structurally (`modelName`, `db.db`, `collection.name`), so it takes no `mongoose` dependency, not even a peer.
+
 ## Quick start
 
 ### Single-DB app: hub + `watchCollection` + `pushScoped`
@@ -55,7 +57,7 @@ One `ChangeStreamHub` per process; every collection subscribed under the same `k
 import { createServer } from 'node:http';
 import { MongoClient } from 'mongodb';
 import { Server } from 'socket.io';
-import { ChangeStreamHub, ValueSignal, watchCollection } from 'mongodb-realtime';
+import { ChangeStreamHub, DEFAULT_KEY, ValueSignal, watchCollection } from 'mongodb-realtime';
 import { pushScoped } from 'mongodb-realtime/socketio';
 
 const client = new MongoClient('mongodb://localhost:27017/?replicaSet=rs0');
@@ -69,7 +71,11 @@ const hub = new ChangeStreamHub();
 const shutdown = new ValueSignal(false);
 
 const watcher = watchCollection({
-    source: { hub, key: 'default', db, collection: 'tasks' },
+    // DEFAULT_KEY is what a bare `Db`/keyless registry already answers to
+    // internally (see the presence example below) — use it explicitly here so
+    // the hub's `connectedKeys` parking (once wired) is comparing the same
+    // string on both sides, not `'default'` against `'__default__'`.
+    source: { hub, key: DEFAULT_KEY, db, collection: 'tasks' },
     shutdown,
 });
 
@@ -204,7 +210,7 @@ async function wirePresence(db: Db, io: Server): Promise<void> {
 }
 ```
 
-`registry.connectedScopes`/`registry.connectedKeys` are `ReadonlySignal<string[]>`s you can wire straight into a `ChangeStreamHub`'s `connectedKeys` option to park a scope's/tenant's watch when nobody on this node is connected to it — see the NestJS example below, where `RealtimeModule` does exactly this by default.
+`registry.connectedScopes`/`registry.connectedKeys` are `ReadonlySignal<string[]>`s you can wire straight into a `ChangeStreamHub`'s `connectedKeys` option to park a scope's/tenant's watch when nobody on this node is connected to it — see the NestJS example below, where `RealtimeModule` does exactly this by default. `registry.add({ clientId, userId, scopeId })` above omits `key`, so it registers under `DEFAULT_KEY` — the same key the hub examples above pass explicitly. **Keep both sides on the same namespace**: if a watch subscribes under a literal `'default'` while `registry.add` (or a keyless `checkIn`) registers under `DEFAULT_KEY` (`'__default__'`), the two strings never match, the watch never sees itself as connected, and it parks permanently once its grace window elapses — silently, with no error and no log.
 
 #### Presence across multiple databases
 
@@ -227,6 +233,8 @@ for await (const event of watchPresence({ store, shutdown, keys: ['tenant-a', 't
 
 `watchPresence` opens one cursor per key watched — it deliberately does not go through a `ChangeStreamHub` (when you're on `RealtimeModule`, its hub's `ignoreCollections` excludes the presence collection specifically, so presence traffic doesn't force an `updateLookup` on a cursor nobody there consumes), so a consumer with a large key set should expect O(keys) presence cursors, not O(1).
 
+`ensureIndexes()`/`clearServer()` are also O(keys): each runs its round-trips (two `createIndex` calls plus an `enablePrePostImages` `collMod` for `ensureIndexes`; one `deleteMany` for `clearServer`) once per key, sequentially — so boot and shutdown time scale with the number of keys a resolver spans, not O(1) as in a single-database store. This is not a correctness issue (presence rows self-heal via TTL regardless), just a cost to budget for boot/shutdown latency on a large tenant set.
+
 The one breaking change carried by keying `PresenceStore`: the `collection` property is gone, replaced by the method `collectionFor(key?)`. See "Upgrading to 0.3" below.
 
 ### NestJS: `RealtimeModule.forRootAsync` + a `ChangeStreamEventPusher` subclass
@@ -234,7 +242,7 @@ The one breaking change carried by keying `PresenceStore`: the `collection` prop
 ```ts
 import { Inject, Injectable, Module } from '@nestjs/common';
 import type { Db } from 'mongodb';
-import { watchCollection, type ChangeStreamHub } from 'mongodb-realtime';
+import { DEFAULT_KEY, watchCollection, type ChangeStreamHub } from 'mongodb-realtime';
 import { pushScoped } from 'mongodb-realtime/socketio';
 import {
     assertChangeStreamPreflight,
@@ -263,7 +271,7 @@ export class TaskPusher extends ChangeStreamEventPusher {
         const io = await this.serverHandle.whenReady();
         try {
             const watcher = watchCollection({
-                source: { hub: this.hub, key: 'default', db: this.db, collection: 'tasks' },
+                source: { hub: this.hub, key: DEFAULT_KEY, db: this.db, collection: 'tasks' },
                 shutdown: this.shutdown, // ValueSignal<boolean> owned by the base class
             });
             this.markWatching(); // tells the base class the loop is live, so it can warn on an early stop instead of staying silent
@@ -307,6 +315,21 @@ export class AppModule {}
 `ChangeStreamEventPusher` subclasses call `this.loopEnded()` in their loop's `finally`; the base class latches on **either** settlement of `pushChangeEvents()` — a rejection (e.g. the watcher throws during setup) or a normal return without the subclass calling `loopEnded()` itself — so `onApplicationShutdown` can never hang on a pusher that crashed or returned early. `loopEnded()` is idempotent, so the subclass's own call and the base class's fallback never conflict. For a pusher that needs the raw change document instead of the canonical `ChangeEvent` pipeline, the base class's `watchOne` helper wraps a single-collection `ChangeStreamSubscription` and calls `markWatching()` for you; a pusher driving more than one `watchOne` must `await Promise.all([...])` them, since `watchOne` deliberately does not latch shutdown itself — the base only latches once `pushChangeEvents()` as a whole settles, and a per-call latch would let the first watch to finish release shutdown while the others are still draining.
 
 Run `assertChangeStreamPreflight(db, { collections: [...] })` at boot (e.g. in `onApplicationBootstrap`, or — as above — inline in `forRootAsync`) to fail fast with an actionable message instead of silently degrading on a non-replica-set deployment. It only *throws* under the default `requireChangeStreams: true`; pass `{ requireChangeStreams: false }` to get a `{ ok, reason? }` `PreflightResult` back instead, as the example above does to derive `enabled`.
+
+`nestLogger(context, impl?)` adapts a NestJS logger to this library's structural `Logger`, so change-stream and fan-out logs land in the same stream and format as the rest of your Nest app instead of going to bare console — both current consumers hand-rolled this before it lived here:
+
+```ts
+import { DEFAULT_KEY, watchCollection } from 'mongodb-realtime';
+import { nestLogger } from 'mongodb-realtime/nestjs';
+
+const hub = new ChangeStreamHub({ logger: nestLogger(TaskPusher.name) }); // constructs its own `new Logger(context)`
+// Or hand it an existing Nest logger instance:
+const watcher = watchCollection({
+    source: { hub, key: DEFAULT_KEY, db, collection: 'tasks' },
+    shutdown,
+    logger: nestLogger(TaskPusher.name, this.logger),
+});
+```
 
 ### mongoose: `modelTarget` + `watchModel`
 
@@ -374,7 +397,7 @@ One breaking change: `EntityChanged.operation` and `EntityRemoved.via` are now r
 
 One breaking change: `PresenceStore.collection`, a property, was replaced by `collectionFor(key?)`, a method. Anywhere your app read `presenceStore.collection` directly (bypassing `checkIn`/`checkOut`/`setPage`/etc., which were already unaffected), call `presenceStore.collectionFor()` instead — omit the argument for the same single-database collection as before. `watchPresence` users are unaffected either way; it always went through the store's methods, never the property.
 
-Everything else in 0.3 is additive: `DbResolver`, `watchAcrossTargets`, keyed `watchPresence`, and the new `mongodb-realtime/mongoose` subpath are all new surface. Every existing single-database call site — a bare `Db` passed to `ChangeStreamHub`, `watchCollection`, `PresenceStore`, or `RealtimeModule` — keeps working unchanged; `toDbResolver` normalises it into a resolver that answers for any key, so nothing about single-database usage requires a code change to pick up 0.3.
+Everything else in 0.3 is additive: `DbResolver`, `DEFAULT_KEY`, `watchAcrossTargets`, keyed `watchPresence`, `nestLogger`, and the new `mongodb-realtime/mongoose` subpath are all new surface. Every existing single-database call site — a bare `Db` passed to `ChangeStreamHub`, `watchCollection`, `PresenceStore`, or `RealtimeModule` — keeps working unchanged; `toDbResolver` normalises it into a resolver that answers for any key, so nothing about single-database usage requires a code change to pick up 0.3.
 
 ## What stays in your app
 

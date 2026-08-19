@@ -41,7 +41,11 @@ export class PresenceStore {
 
     /** The presence collection in the database `key` names. */
     collectionFor(key: string = DEFAULT_KEY): Collection<PresenceDoc> {
-        return this.resolver.dbFor(key).collection<PresenceDoc>(this.collectionName);
+        const db = this.resolver.dbFor(key);
+        if (!db) {
+            throw new Error(`No database for key '${key}'`);
+        }
+        return db.collection<PresenceDoc>(this.collectionName);
     }
 
     /** Idempotent: safe to call on every startup. Runs for every key. */

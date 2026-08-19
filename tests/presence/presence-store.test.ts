@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Db } from 'mongodb';
 import { DEFAULT_KEY, type DbResolver } from '../../src/core/db-resolver.js';
 import { PresenceStore } from '../../src/presence/presence-store.js';
 import { startReplSet, stopReplSet, uniqueCollection } from '../helpers/replset.js';
@@ -276,5 +277,13 @@ describe('PresenceStore across keys', () => {
         expect(store.collectionFor().collectionName).toBe(store.collectionFor(DEFAULT_KEY).collectionName);
         await store.checkOut('u9', 'c9');
         expect(await store.countUserRows('u9')).toBe(0);
+    });
+
+    it("collectionFor throws an actionable error for a key the resolver doesn't know", () => {
+        // A Map-backed resolver (the common shape) returns undefined for an
+        // unregistered key, same as a consumer who forgot to add a tenant.
+        const resolver: DbResolver = { keys: () => ['a'], dbFor: () => undefined as unknown as Db };
+        const store = new PresenceStore({ db: resolver, serverId: randomUUID(), collectionName: 'presence' });
+        expect(() => store.collectionFor('missing')).toThrow("No database for key 'missing'");
     });
 });

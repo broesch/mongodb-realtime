@@ -86,25 +86,39 @@ describe('fm multi-tenant watch contract', () => {
             }
         })();
 
-        // Give both hub-level change streams time to open before writing.
-        await delay(1_000);
-        await dbA.collection(collection).insertOne({ organizationId: 'org-a', name: 'from-a' });
+        // Teardown runs even if an assertion below throws, so a failing
+        // assertion can never leak the hub's open cursors and dangling
+        // `for await` loop into afterAll (see docs/follow-ups-0.1.x.md).
+        try {
+            // Give both hub-level change streams time to open before writing.
+            await delay(1_000);
+            // Write to BOTH databases: a regression where target B's stream
+            // never opens at all must fail this test, not pass it silently
+            // because B was never exercised.
+            await dbA.collection(collection).insertOne({ organizationId: 'org-a', name: 'from-a' });
+            await dbB.collection(collection).insertOne({ organizationId: 'org-b', name: 'from-b' });
 
-        await waitForLength(seen, 1);
-        // Settle a bit longer: proves nothing further trickles in — in
-        // particular no event carrying tenant B, and no duplicate delivery
-        // of the tenant-A insert via the wrong stream.
-        await delay(500);
-        shutdown.next(true);
-        await collecting;
+            await waitForLength(seen, 2);
+            // Settle a bit longer: proves nothing further trickles in beyond
+            // exactly one event per tenant — no duplicate delivery of either
+            // insert, and no cross-tenant leakage in either direction.
+            await delay(500);
 
-        expect(seen).toHaveLength(1);
-        const event = asChanged(seen[0]);
-        expect(event.tenant).toEqual({ slug: 'a' });
-        expect(event.scopeId).toBe('org-a');
-        expect(nameOf(seen[0])).toBe('from-a');
-
-        await hub.close();
+            expect(seen).toHaveLength(2);
+            const bySlug = new Map(seen.map(event => [asChanged(event).tenant?.slug, event]));
+            const fromA = bySlug.get('a');
+            const fromB = bySlug.get('b');
+            expect(fromA).toBeDefined();
+            expect(fromB).toBeDefined();
+            expect(asChanged(fromA!).scopeId).toBe('org-a');
+            expect(nameOf(fromA!)).toBe('from-a');
+            expect(asChanged(fromB!).scopeId).toBe('org-b');
+            expect(nameOf(fromB!)).toBe('from-b');
+        } finally {
+            shutdown.next(true);
+            await collecting;
+            await hub.close();
+        }
     });
 
     it('parks a key absent from connectedKeys and resumes losslessly when it returns', async () => {
@@ -130,40 +144,43 @@ describe('fm multi-tenant watch contract', () => {
             }
         })();
 
-        await delay(1_000);
+        // Teardown runs even if an assertion below throws — see the same
+        // comment on the isolation test above.
+        try {
+            await delay(1_000);
 
-        // Sanity + establishes a resume point: connected, so a live insert is
-        // delivered normally, proving the hub's DB-level cursor is actually
-        // open before we park it below.
-        await dbA.collection(collection).insertOne({ organizationId: 'org-a', name: 'before-park' });
-        await waitForLength(seen, 1);
-        expect(nameOf(seen[0])).toBe('before-park');
+            // Sanity + establishes a resume point: connected, so a live insert is
+            // delivered normally, proving the hub's DB-level cursor is actually
+            // open before we park it below.
+            await dbA.collection(collection).insertOne({ organizationId: 'org-a', name: 'before-park' });
+            await waitForLength(seen, 1);
+            expect(nameOf(seen[0])).toBe('before-park');
 
-        // Disconnect this pod from tenant 'a' and outlast the grace window —
-        // the hub actually parks the watch (no open cursor), not merely
-        // pausing delivery.
-        connectedKeys.next([]);
-        await delay(graceMs + 500);
+            // Disconnect this pod from tenant 'a' and outlast the grace window —
+            // the hub actually parks the watch (no open cursor), not merely
+            // pausing delivery.
+            connectedKeys.next([]);
+            await delay(graceMs + 500);
 
-        // Insert while parked: no cursor is open, so nothing is delivered yet.
-        await dbA.collection(collection).insertOne({ organizationId: 'org-a', name: 'while-parked' });
-        await delay(500);
-        expect(seen).toHaveLength(1); // still just 'before-park' — nothing arrived while parked
+            // Insert while parked: no cursor is open, so nothing is delivered yet.
+            await dbA.collection(collection).insertOne({ organizationId: 'org-a', name: 'while-parked' });
+            await delay(500);
+            expect(seen).toHaveLength(1); // still just 'before-park' — nothing arrived while parked
 
-        // Reconnect: the hub reopens the watch from its last captured resume
-        // point, so the insert made during the park is not lost.
-        connectedKeys.next(['a']);
-        await waitForLength(seen, 2);
+            // Reconnect: the hub reopens the watch from its last captured resume
+            // point, so the insert made during the park is not lost.
+            connectedKeys.next(['a']);
+            await waitForLength(seen, 2);
 
-        shutdown.next(true);
-        await collecting;
-
-        const resumed = seen.find(e => nameOf(e) === 'while-parked');
-        expect(resumed).toBeDefined();
-        const resumedChanged = asChanged(resumed!);
-        expect(resumedChanged.tenant).toEqual({ slug: 'a' });
-        expect(resumedChanged.scopeId).toBe('org-a');
-
-        await hub.close();
+            const resumed = seen.find(e => nameOf(e) === 'while-parked');
+            expect(resumed).toBeDefined();
+            const resumedChanged = asChanged(resumed!);
+            expect(resumedChanged.tenant).toEqual({ slug: 'a' });
+            expect(resumedChanged.scopeId).toBe('org-a');
+        } finally {
+            shutdown.next(true);
+            await collecting;
+            await hub.close();
+        }
     });
 });
