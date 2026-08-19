@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { vi } from 'vitest';
 import { ChangeStreamHub } from '../../src/core/change-stream-hub.js';
+import type { DbResolver } from '../../src/core/db-resolver.js';
 import { ConnectionRegistry } from '../../src/presence/connection-registry.js';
 import { PresenceStore } from '../../src/presence/presence-store.js';
 import { SocketServerHandle } from '../../src/nestjs/socket-server-handle.js';
@@ -271,6 +273,23 @@ describe('RealtimeModule.forRoot', () => {
         expect((handle as SocketServerHandle).isReady()).toBe(false);
 
         await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
+    });
+
+    it('provides a PresenceStore spanning every key when given a resolver', async () => {
+        const { client } = await startReplSet();
+        const dbA = client.db(`rm-a-${randomUUID().slice(0, 8)}`);
+        const dbB = client.db(`rm-b-${randomUUID().slice(0, 8)}`);
+        const resolver: DbResolver = { keys: () => ['a', 'b'], dbFor: k => (k === 'a' ? dbA : dbB) };
+
+        const module = RealtimeModule.forRoot({ db: resolver });
+        const storeProvider = (module.providers ?? []).find(
+            p => (p as { provide?: unknown }).provide === PRESENCE_STORE
+        ) as { useFactory: (serverId: string) => PresenceStore };
+
+        const store = storeProvider.useFactory('server-1');
+        expect(store.keys()).toEqual(['a', 'b']);
+        expect(store.collectionFor('a').dbName).toBe(dbA.databaseName);
+        expect(store.collectionFor('b').dbName).toBe(dbB.databaseName);
     });
 });
 

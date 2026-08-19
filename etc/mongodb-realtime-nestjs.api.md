@@ -209,8 +209,7 @@ export class RealtimeModule {
 
 // @public (undocumented)
 export interface RealtimeModuleOptions {
-    // (undocumented)
-    db: Db;
+    db: Db | DbResolver;
     enabled?: boolean;
     // (undocumented)
     hub?: ChangeStreamHubOptions;

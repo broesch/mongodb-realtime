@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { DynamicModule, OnApplicationShutdown, OnModuleInit, Provider } from '@nestjs/common';
 import type { Db } from 'mongodb';
 import { ChangeStreamHub, type ChangeStreamHubOptions } from '../core/change-stream-hub.js';
+import type { DbResolver } from '../core/db-resolver.js';
 import { ConnectionRegistry } from '../presence/connection-registry.js';
 import { PresenceStore } from '../presence/presence-store.js';
 import { DEFAULT_PRESENCE_COLLECTION, type PresenceStoreOptions } from '../presence/types.js';
@@ -17,7 +18,13 @@ export const REALTIME_ENABLED = 'MONGODB_REALTIME_ENABLED';
 export const SOCKET_SERVER = 'MONGODB_REALTIME_SOCKET_SERVER';
 
 export interface RealtimeModuleOptions {
-    db: Db;
+    /**
+     * One database, or a resolver spanning several keyed databases. With a
+     * resolver, the presence store keys every operation and the hub's
+     * `connectedKeys` parking compares against those same keys. A bare `Db`
+     * behaves exactly as before.
+     */
+    db: Db | DbResolver;
     presence?: Omit<PresenceStoreOptions, 'db' | 'serverId'>;
     hub?: ChangeStreamHubOptions;
     /**
