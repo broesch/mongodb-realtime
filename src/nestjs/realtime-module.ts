@@ -109,40 +109,63 @@ function hubIgnoreCollections(options: RealtimeModuleOptions): string[] {
     return [options.presence?.collectionName ?? DEFAULT_PRESENCE_COLLECTION, ...(options.hub?.ignoreCollections ?? [])];
 }
 
-function buildProviders(options: RealtimeModuleOptions): Provider[] {
+const OPTIONS_TOKEN = 'MONGODB_REALTIME_MODULE_OPTIONS';
+
+const REALTIME_EXPORTS = [
+    SERVER_ID,
+    REALTIME_ENABLED,
+    SOCKET_SERVER,
+    CONNECTION_REGISTRY,
+    PRESENCE_STORE,
+    CHANGE_STREAM_HUB,
+    RealtimeLifecycle,
+];
+
+/**
+ * The seven providers, built once for both `forRoot` and `forRootAsync`.
+ *
+ * `source` is either the options object itself (sync) or the DI token the
+ * options are provided under (async). Each factory that needs the options
+ * takes them as its FIRST injected argument in the async case and closes over
+ * them in the sync case, so the two shapes stay one code path.
+ */
+function buildProviders(source: RealtimeModuleOptions | string): Provider[] {
+    const async = typeof source === 'string';
+    const optionsInject = async ? [source] : [];
+    // In sync mode the factory receives no options argument, so fall back to
+    // the captured object.
+    const opts = (args: any[]): RealtimeModuleOptions => (async ? (args[0] as RealtimeModuleOptions) : source);
+
     return [
-        {
-            provide: SERVER_ID,
-            useFactory: (): string => randomUUID(),
-        },
+        { provide: SERVER_ID, useFactory: (): string => randomUUID() },
         {
             provide: REALTIME_ENABLED,
-            useFactory: (): boolean => options.enabled !== false,
+            useFactory: (...args: any[]): boolean => opts(args).enabled !== false,
+            inject: optionsInject,
         },
-        {
-            provide: SOCKET_SERVER,
-            useFactory: (): SocketServerHandle => new SocketServerHandle(),
-        },
-        {
-            provide: CONNECTION_REGISTRY,
-            useFactory: (): ConnectionRegistry => new ConnectionRegistry(),
-        },
+        { provide: SOCKET_SERVER, useFactory: (): SocketServerHandle => new SocketServerHandle() },
+        { provide: CONNECTION_REGISTRY, useFactory: (): ConnectionRegistry => new ConnectionRegistry() },
         {
             provide: PRESENCE_STORE,
-            useFactory: (serverId: string): PresenceStore =>
-                new PresenceStore({ ...options.presence, db: options.db, serverId }),
-            inject: [SERVER_ID],
+            useFactory: (...args: any[]): PresenceStore => {
+                const o = opts(args);
+                const serverId = args[optionsInject.length] as string;
+                return new PresenceStore({ ...o.presence, db: o.db, serverId });
+            },
+            inject: [...optionsInject, SERVER_ID],
         },
         {
             provide: CHANGE_STREAM_HUB,
-            useFactory: (registry: ConnectionRegistry): ChangeStreamHub =>
-                new ChangeStreamHub({
-                    ...options.hub,
-                    ignoreCollections: hubIgnoreCollections(options),
-                    connectedKeys:
-                        options.wireHubParking !== false ? registry.connectedKeys : options.hub?.connectedKeys,
-                }),
-            inject: [CONNECTION_REGISTRY],
+            useFactory: (...args: any[]): ChangeStreamHub => {
+                const o = opts(args);
+                const registry = args[optionsInject.length] as ConnectionRegistry;
+                return new ChangeStreamHub({
+                    ...o.hub,
+                    ignoreCollections: hubIgnoreCollections(o),
+                    connectedKeys: o.wireHubParking !== false ? registry.connectedKeys : o.hub?.connectedKeys,
+                });
+            },
+            inject: [...optionsInject, CONNECTION_REGISTRY],
         },
         {
             provide: RealtimeLifecycle,
@@ -162,19 +185,7 @@ function buildProviders(options: RealtimeModuleOptions): Provider[] {
  */
 export class RealtimeModule {
     static forRoot(options: RealtimeModuleOptions): DynamicModule {
-        return {
-            module: RealtimeModule,
-            providers: buildProviders(options),
-            exports: [
-                SERVER_ID,
-                REALTIME_ENABLED,
-                SOCKET_SERVER,
-                CONNECTION_REGISTRY,
-                PRESENCE_STORE,
-                CHANGE_STREAM_HUB,
-                RealtimeLifecycle,
-            ],
-        };
+        return { module: RealtimeModule, providers: buildProviders(options), exports: REALTIME_EXPORTS };
     }
 
     static forRootAsync(options: {
@@ -182,7 +193,6 @@ export class RealtimeModule {
         inject?: any[];
         useFactory: (...args: any[]) => RealtimeModuleOptions | Promise<RealtimeModuleOptions>;
     }): DynamicModule {
-        const OPTIONS_TOKEN = 'MONGODB_REALTIME_MODULE_OPTIONS';
         return {
             module: RealtimeModule,
             imports: options.imports as DynamicModule['imports'],
@@ -192,58 +202,9 @@ export class RealtimeModule {
                     useFactory: async (...args: any[]) => options.useFactory(...args),
                     inject: options.inject ?? [],
                 },
-                {
-                    provide: SERVER_ID,
-                    useFactory: (): string => randomUUID(),
-                },
-                {
-                    provide: REALTIME_ENABLED,
-                    useFactory: (moduleOptions: RealtimeModuleOptions): boolean => moduleOptions.enabled !== false,
-                    inject: [OPTIONS_TOKEN],
-                },
-                {
-                    provide: SOCKET_SERVER,
-                    useFactory: (): SocketServerHandle => new SocketServerHandle(),
-                },
-                {
-                    provide: CONNECTION_REGISTRY,
-                    useFactory: (): ConnectionRegistry => new ConnectionRegistry(),
-                },
-                {
-                    provide: PRESENCE_STORE,
-                    useFactory: (moduleOptions: RealtimeModuleOptions, serverId: string): PresenceStore =>
-                        new PresenceStore({ ...moduleOptions.presence, db: moduleOptions.db, serverId }),
-                    inject: [OPTIONS_TOKEN, SERVER_ID],
-                },
-                {
-                    provide: CHANGE_STREAM_HUB,
-                    useFactory: (moduleOptions: RealtimeModuleOptions, registry: ConnectionRegistry): ChangeStreamHub =>
-                        new ChangeStreamHub({
-                            ...moduleOptions.hub,
-                            ignoreCollections: hubIgnoreCollections(moduleOptions),
-                            connectedKeys:
-                                moduleOptions.wireHubParking !== false
-                                    ? registry.connectedKeys
-                                    : moduleOptions.hub?.connectedKeys,
-                        }),
-                    inject: [OPTIONS_TOKEN, CONNECTION_REGISTRY],
-                },
-                {
-                    provide: RealtimeLifecycle,
-                    useFactory: (presenceStore: PresenceStore, hub: ChangeStreamHub): RealtimeLifecycle =>
-                        new RealtimeLifecycle(presenceStore, hub),
-                    inject: [PRESENCE_STORE, CHANGE_STREAM_HUB],
-                },
+                ...buildProviders(OPTIONS_TOKEN),
             ] as Provider[],
-            exports: [
-                SERVER_ID,
-                REALTIME_ENABLED,
-                SOCKET_SERVER,
-                CONNECTION_REGISTRY,
-                PRESENCE_STORE,
-                CHANGE_STREAM_HUB,
-                RealtimeLifecycle,
-            ],
+            exports: REALTIME_EXPORTS,
         };
     }
 }

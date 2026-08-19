@@ -329,3 +329,30 @@ describe('RealtimeModule.forRootAsync', () => {
         await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
     });
 });
+
+describe('RealtimeModule provider parity', () => {
+    it('forRoot and forRootAsync expose the identical provider and export sets', async () => {
+        const { db } = await startReplSet();
+        const sync = RealtimeModule.forRoot({ db });
+        const async = RealtimeModule.forRootAsync({ useFactory: () => ({ db }) });
+
+        const tokensOf = (mod: { providers?: unknown[] }): unknown[] =>
+            (mod.providers ?? [])
+                .map(p => (p as { provide?: unknown }).provide)
+                .filter(t => t !== 'MONGODB_REALTIME_MODULE_OPTIONS');
+
+        expect(new Set(tokensOf(sync))).toEqual(
+            new Set([
+                SERVER_ID,
+                REALTIME_ENABLED,
+                SOCKET_SERVER,
+                CONNECTION_REGISTRY,
+                PRESENCE_STORE,
+                CHANGE_STREAM_HUB,
+                RealtimeLifecycle,
+            ])
+        );
+        expect(new Set(tokensOf(async))).toEqual(new Set(tokensOf(sync)));
+        expect(sync.exports).toEqual(async.exports);
+    });
+});
