@@ -15,12 +15,14 @@ describe('nestLogger', () => {
         logger.log('l');
         logger.warn('w');
         logger.error('e', 'stack-trace');
+        logger.error('e2');
 
         expect(calls).toEqual([
             ['debug', ['d']],
             ['log', ['l']],
             ['warn', ['w']],
             ['error', ['e', 'stack-trace']],
+            ['error', ['e2']],
         ]);
     });
 });
