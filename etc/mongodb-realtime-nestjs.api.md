@@ -94,6 +94,21 @@ export interface Logger {
     warn(message: string): void;
 }
 
+// @public
+export function nestLogger(context: string, impl?: NestLoggerLike): Logger;
+
+// @public
+export interface NestLoggerLike {
+    // (undocumented)
+    debug(message: string, ...rest: unknown[]): void;
+    // (undocumented)
+    error(message: string, ...rest: unknown[]): void;
+    // (undocumented)
+    log(message: string, ...rest: unknown[]): void;
+    // (undocumented)
+    warn(message: string, ...rest: unknown[]): void;
+}
+
 // @public (undocumented)
 export interface PreflightOptions {
     collections?: string[];
