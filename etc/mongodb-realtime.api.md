@@ -214,6 +214,28 @@ export class ValueSignal<T> implements Signal<T> {
 }
 
 // @public
+export function watchAcrossTargets<TTenant = unknown>(options: WatchAcrossTargetsOptions<TTenant>): AsyncGenerator<ChangeEvent<TTenant>>;
+
+// @public (undocumented)
+export interface WatchAcrossTargetsOptions<TTenant> {
+    // (undocumented)
+    conventions?: ChangeEventConventions;
+    hub?: ChangeStreamHub;
+    // (undocumented)
+    initialBackoffMs?: number;
+    // (undocumented)
+    logger?: Logger;
+    // (undocumented)
+    maxBackoffMs?: number;
+    // (undocumented)
+    name?: string;
+    // (undocumented)
+    shutdown: ReadonlySignal<boolean>;
+    // (undocumented)
+    targets: Array<WatchTarget<TTenant>>;
+}
+
+// @public
 export function watchCollection<TTenant = unknown>(options: WatchCollectionOptions<TTenant>): AsyncGenerator<ChangeEvent<TTenant>>;
 
 // @public (undocumented)
@@ -246,6 +268,16 @@ export type WatchSource = {
     db: Db;
     collection: string;
 };
+
+// @public
+export interface WatchTarget<TTenant = unknown> {
+    // (undocumented)
+    collection: string;
+    // (undocumented)
+    db: Db;
+    key: string;
+    tenant?: TTenant;
+}
 
 // (No @packageDocumentation comment for this package)
 

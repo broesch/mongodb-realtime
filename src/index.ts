@@ -8,3 +8,4 @@ export * from './core/change-stream-subscription.js';
 export * from './core/change-stream-hub.js';
 export * from './core/merge-async-generators.js';
 export * from './core/watch-collection.js';
+export * from './core/watch-across-targets.js';
