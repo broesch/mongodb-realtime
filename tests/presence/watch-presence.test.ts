@@ -6,6 +6,7 @@ import { PresenceStore } from '../../src/presence/presence-store.js';
 import { ValueSignal } from '../../src/common/signal.js';
 import { startReplSet, stopReplSet, uniqueCollection } from '../helpers/replset.js';
 import { delay, trackNext, expectEvent, expectNoEvent, expectDone, type Tracker } from '../helpers/timing.js';
+import type { DbResolver } from '../../src/core/db-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Replica-set-backed tests for watchPresence's 0/1 transition detection and
@@ -250,7 +251,7 @@ describe('watchPresence', () => {
         // subfield directly) — this must still count as a write of the watched
         // `session.page` activityFields entry, mirroring `didChange`'s reverse
         // prefix match.
-        await (store1.collection as unknown as Collection).updateOne(
+        await (store1.collectionFor() as unknown as Collection).updateOne(
             { userId, clientId, serverId: store1.serverId },
             { $set: { session: { page: '/calendar' } } }
         );
@@ -305,5 +306,38 @@ describe('watchPresence', () => {
 
         shutdown.next(true);
         await expectDone(tracked);
+    });
+
+    it('watches every key and reports transitions per database', async () => {
+        const { client } = await startReplSet();
+        const dbA = client.db(`wp-a-${randomUUID().slice(0, 8)}`);
+        const dbB = client.db(`wp-b-${randomUUID().slice(0, 8)}`);
+        const resolver: DbResolver = { keys: () => ['a', 'b'], dbFor: k => (k === 'a' ? dbA : dbB) };
+        const store = new PresenceStore({
+            db: resolver,
+            serverId: randomUUID(),
+            collectionName: uniqueCollection('presence'),
+        });
+        await store.ensureIndexes();
+
+        const shutdown = new ValueSignal(false);
+        const seen: PresenceEvent[] = [];
+        const collecting = (async () => {
+            for await (const event of watchPresence({ store, shutdown })) {
+                seen.push(event);
+                if (seen.length === 2) break;
+            }
+        })();
+
+        await new Promise(resolve => setTimeout(resolve, 1_000));
+        // The SAME user id in two databases: each is its own 0->1 transition.
+        await store.checkIn({ userId: 'u1', clientId: 'c1', scopeId: 's1', key: 'a' });
+        await store.checkIn({ userId: 'u1', clientId: 'c2', scopeId: 's2', key: 'b' });
+
+        await collecting;
+        shutdown.next(true);
+
+        expect(seen.every(e => e.type === 'online')).toBe(true);
+        expect(new Set(seen.map(e => e.key))).toEqual(new Set(['a', 'b']));
     });
 });

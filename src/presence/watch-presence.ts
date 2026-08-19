@@ -1,6 +1,8 @@
 import type { ChangeStreamDocument, Collection, Document, ObjectId } from 'mongodb';
 import { ChangeStreamSubscription } from '../core/change-stream-subscription.js';
 import { collectionWatchFactory } from '../core/watch-collection.js';
+import { mergeAsyncGenerators } from '../core/merge-async-generators.js';
+import { DEFAULT_KEY } from '../core/db-resolver.js';
 import { consoleLogger, prefixed, type Logger } from '../common/logger.js';
 import { ValueSignal, type ReadonlySignal } from '../common/signal.js';
 import type { PresenceStore } from './presence-store.js';
@@ -60,6 +62,12 @@ export interface PresenceEvent {
 export async function* watchPresence(options: {
     store: PresenceStore;
     shutdown: ReadonlySignal<boolean>;
+    /**
+     * Which keys to watch. Defaults to every key the store spans. One
+     * dedicated change stream is opened per key and the results are merged;
+     * a single-database store therefore opens exactly one, as before.
+     */
+    keys?: string[];
     logger?: Logger;
     /**
      * Fields whose write yields an `activity` event. Defaults to `['page']`.
@@ -69,12 +77,27 @@ export async function* watchPresence(options: {
      */
     activityFields?: string[];
 }): AsyncGenerator<PresenceEvent> {
-    const log = prefixed(options.logger ?? consoleLogger, 'watchPresence');
-    const { store } = options;
-    // `collectionWatchFactory` takes an untyped `Collection<Document>`; `store.collection`
+    const keys = options.keys ?? options.store.keys();
+    if (keys.length === 1) {
+        // Avoid the merge wrapper entirely in the overwhelmingly common
+        // single-database case, so its teardown semantics are not in the path.
+        yield* watchPresenceKey(options.store, keys[0], options);
+        return;
+    }
+    yield* mergeAsyncGenerators(keys.map(key => watchPresenceKey(options.store, key, options)));
+}
+
+async function* watchPresenceKey(
+    store: PresenceStore,
+    key: string,
+    options: { shutdown: ReadonlySignal<boolean>; logger?: Logger; activityFields?: string[] }
+): AsyncGenerator<PresenceEvent> {
+    const label = key === DEFAULT_KEY ? 'watchPresence' : `watchPresence[${key}]`;
+    const log = prefixed(options.logger ?? consoleLogger, label);
+    // `collectionWatchFactory` takes an untyped `Collection<Document>`; `store.collectionFor(key)`
     // is a `Collection<PresenceDoc>`, which TS's invariant `Collection<T>` rejects as an
     // argument even though every `PresenceDoc` is structurally a `Document`.
-    const watch = collectionWatchFactory(store.collection as unknown as Collection);
+    const watch = collectionWatchFactory(store.collectionFor(key) as unknown as Collection);
 
     // Constructed fresh here, not hoisted to a module-level constant: per the
     // constant-scope pattern used by `watchCollection`'s `directLoop`,
@@ -88,7 +111,7 @@ export async function* watchPresence(options: {
         scope,
         options.shutdown,
         (_scope, resumeOptions) => watch(resumeOptions),
-        { name: 'watchPresence', logger: log }
+        { name: label, logger: log }
     );
 
     for await (const change of subscription) {
@@ -101,7 +124,7 @@ export async function* watchPresence(options: {
         // and skip the event instead; the loop continues to the next change.
         let event: PresenceEvent | undefined;
         try {
-            event = await toPresenceEvent(change, store, log, options.activityFields ?? DEFAULT_ACTIVITY_FIELDS);
+            event = await toPresenceEvent(change, store, key, log, options.activityFields ?? DEFAULT_ACTIVITY_FIELDS);
         } catch (err) {
             const doc = change as {
                 fullDocument?: { userId?: string };
@@ -120,6 +143,7 @@ export async function* watchPresence(options: {
 async function toPresenceEvent(
     change: ChangeStreamDocument<Document>,
     store: PresenceStore,
+    key: string,
     log: Logger,
     activityFields: string[]
 ): Promise<PresenceEvent | undefined> {
@@ -132,7 +156,7 @@ async function toPresenceEvent(
             }
             // Order-stable 0→1 check — see the module docstring for why a live
             // total-count check would silently swallow concurrent first connections.
-            if ((await store.countOlderUserRows(doc.userId, doc._id)) > 0) return undefined;
+            if ((await store.countOlderUserRows(doc.userId, doc._id, key)) > 0) return undefined;
             return {
                 type: 'online',
                 userId: doc.userId,
@@ -149,7 +173,7 @@ async function toPresenceEvent(
                 log.warn('Skipping presence delete with no pre-image — cannot determine online/offline transition');
                 return undefined;
             }
-            if ((await store.countUserRows(before.userId)) !== 0) return undefined;
+            if ((await store.countUserRows(before.userId, key)) !== 0) return undefined;
             return {
                 type: 'offline',
                 userId: before.userId,

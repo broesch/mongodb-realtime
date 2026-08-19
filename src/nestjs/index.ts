@@ -14,3 +14,4 @@ export type { PresenceStoreOptions, PresenceDoc } from '../presence/types.js';
 export type { ChangeStreamHubOptions } from '../core/change-stream-hub.js';
 export type { PresenceStore } from '../presence/presence-store.js';
 export type { ChangeStreamHub } from '../core/change-stream-hub.js';
+export type { DbResolver } from '../core/db-resolver.js';

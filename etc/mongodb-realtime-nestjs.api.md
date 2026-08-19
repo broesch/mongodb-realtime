@@ -75,6 +75,14 @@ export interface ChangeStreamHubOptions {
 export const CONNECTION_REGISTRY = "MONGODB_REALTIME_CONNECTION_REGISTRY";
 
 // @public
+export interface DbResolver {
+    // (undocumented)
+    dbFor(key: string): Db;
+    // (undocumented)
+    keys(): string[];
+}
+
+// @public
 export interface Logger {
     // (undocumented)
     debug(message: string): void;
@@ -138,27 +146,26 @@ export class PresenceStore {
         isNewConnection: boolean;
     }>;
     // (undocumented)
-    checkOut(userId: string, clientId: string): Promise<void>;
+    checkOut(userId: string, clientId: string, key?: string): Promise<void>;
     clearServer(): Promise<void>;
-    // (undocumented)
-    readonly collection: Collection<PresenceDoc>;
-    countOlderUserRows(userId: string, beforeId: ObjectId): Promise<number>;
-    countUserRows(userId: string): Promise<number>;
+    collectionFor(key?: string): Collection<PresenceDoc>;
+    countOlderUserRows(userId: string, beforeId: ObjectId, key?: string): Promise<number>;
+    countUserRows(userId: string, key?: string): Promise<number>;
     ensureIndexes(): Promise<void>;
     // (undocumented)
-    keepAlive(userId: string, clientId: string): Promise<void>;
+    keepAlive(userId: string, clientId: string, key?: string): Promise<void>;
+    keys(): string[];
     // (undocumented)
     readonly serverId: string;
     // (undocumented)
-    setPage(userId: string, clientId: string, page: string): Promise<void>;
+    setPage(userId: string, clientId: string, page: string, key?: string): Promise<void>;
 }
 
 // @public (undocumented)
 export interface PresenceStoreOptions {
     // (undocumented)
     collectionName?: string;
-    // (undocumented)
-    db: Db;
+    db: Db | DbResolver;
     // (undocumented)
     logger?: Logger;
     // (undocumented)

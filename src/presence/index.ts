@@ -9,3 +9,4 @@ export * from './watch-presence.js';
 // exported above (ConnectionRegistry, watchPresence, ...).
 export type { Logger } from '../common/logger.js';
 export type { ReadonlySignal } from '../common/signal.js';
+export type { DbResolver } from '../core/db-resolver.js';

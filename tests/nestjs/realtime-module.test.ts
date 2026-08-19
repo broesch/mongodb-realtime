@@ -300,7 +300,7 @@ describe('RealtimeModule.forRootAsync', () => {
 
         const presenceStore = resolved.get(PRESENCE_STORE) as PresenceStore;
         expect(presenceStore).toBeInstanceOf(PresenceStore);
-        expect(presenceStore.collection.collectionName).toBe(collectionName);
+        expect(presenceStore.collectionFor().collectionName).toBe(collectionName);
 
         await (resolved.get(CHANGE_STREAM_HUB) as ChangeStreamHub).close();
     });
