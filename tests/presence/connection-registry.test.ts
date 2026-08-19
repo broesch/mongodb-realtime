@@ -1,5 +1,6 @@
 import { ConnectionRegistry, type ConnectionEntry } from '../../src/presence/connection-registry.js';
 import { subscribeToChanges } from '../../src/common/signal.js';
+import { DEFAULT_KEY } from '../../src/core/db-resolver.js';
 
 describe('ConnectionRegistry', () => {
     it('add exposes the entry via connectedUsers/byScope/byClientId; key defaults to __default__', () => {
@@ -117,5 +118,13 @@ describe('ConnectionRegistry', () => {
         ]);
         expect(registry.connectedScopes.getValue()).toEqual(['s2']);
         expect(registry.connectedKeys.getValue()).toEqual(['tenant-a']);
+    });
+
+    it('defaults a keyless connection to the shared DEFAULT_KEY constant', () => {
+        const registry = new ConnectionRegistry();
+        registry.add({ clientId: 'c1', userId: 'u1', scopeId: 's1' });
+
+        expect(registry.connectedKeys.getValue()).toEqual([DEFAULT_KEY]);
+        expect(registry.byClientId('c1')?.key).toBe(DEFAULT_KEY);
     });
 });

@@ -1,4 +1,5 @@
 import { ValueSignal, type ReadonlySignal } from '../common/signal.js';
+import { DEFAULT_KEY } from '../core/db-resolver.js';
 
 /** A single client's live connection: one entry per connected socket/clientId. */
 export interface ConnectionEntry {
@@ -37,7 +38,7 @@ export class ConnectionRegistry {
             clientId: entry.clientId,
             userId: entry.userId,
             scopeId: entry.scopeId,
-            key: entry.key ?? '__default__',
+            key: entry.key ?? DEFAULT_KEY,
             meta: entry.meta,
         };
         const updated = this._connectedUsers.getValue().filter(u => u.clientId !== entry.clientId);
