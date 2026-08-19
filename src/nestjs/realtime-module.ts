@@ -122,49 +122,70 @@ const REALTIME_EXPORTS = [
 ];
 
 /**
+ * Adapts a factory written with named, typed parameters to the untyped
+ * `(...args: any[])` shape Nest's `useFactory` requires, splitting the
+ * options argument off the front on the async path and supplying the
+ * closed-over options on the sync path. Keeps one code path for both entry
+ * points WITHOUT hand-indexing into `args`.
+ *
+ * The cast at the boundary is confined to this one adapter — every provider
+ * built with it keeps a normal, compiler-checked signature
+ * `(options: RealtimeModuleOptions, ...deps) => T`, so a wrong `inject` token
+ * or a copy-pasted factory that misuses a dependency's type still fails to
+ * compile, the same protection the pre-refactor duplicated factories had.
+ */
+function adaptOptionsFactory<TDeps extends unknown[], TResult>(
+    source: RealtimeModuleOptions | string,
+    factory: (options: RealtimeModuleOptions, ...deps: TDeps) => TResult
+): (...args: any[]) => TResult {
+    if (typeof source === 'string') {
+        return (...args: any[]): TResult => factory(args[0] as RealtimeModuleOptions, ...(args.slice(1) as TDeps));
+    }
+    return (...deps: any[]): TResult => factory(source, ...(deps as TDeps));
+}
+
+/**
  * The seven providers, built once for both `forRoot` and `forRootAsync`.
  *
  * `source` is either the options object itself (sync) or the DI token the
- * options are provided under (async). Each factory that needs the options
- * takes them as its FIRST injected argument in the async case and closes over
- * them in the sync case, so the two shapes stay one code path.
+ * options are provided under (async). Providers that need the options are
+ * built via {@link adaptOptionsFactory}, whose `inject` array is
+ * `[...optionsInject, ...depTokens]` — the token order it requires to hand
+ * back `(options, ...deps)` matches the factory signatures below 1:1.
  */
 function buildProviders(source: RealtimeModuleOptions | string): Provider[] {
-    const async = typeof source === 'string';
-    const optionsInject = async ? [source] : [];
-    // In sync mode the factory receives no options argument, so fall back to
-    // the captured object.
-    const opts = (args: any[]): RealtimeModuleOptions => (async ? (args[0] as RealtimeModuleOptions) : source);
+    const optionsInject = typeof source === 'string' ? [source] : [];
 
     return [
         { provide: SERVER_ID, useFactory: (): string => randomUUID() },
         {
             provide: REALTIME_ENABLED,
-            useFactory: (...args: any[]): boolean => opts(args).enabled !== false,
+            useFactory: adaptOptionsFactory(source, (options): boolean => options.enabled !== false),
             inject: optionsInject,
         },
         { provide: SOCKET_SERVER, useFactory: (): SocketServerHandle => new SocketServerHandle() },
         { provide: CONNECTION_REGISTRY, useFactory: (): ConnectionRegistry => new ConnectionRegistry() },
         {
             provide: PRESENCE_STORE,
-            useFactory: (...args: any[]): PresenceStore => {
-                const o = opts(args);
-                const serverId = args[optionsInject.length] as string;
-                return new PresenceStore({ ...o.presence, db: o.db, serverId });
-            },
+            useFactory: adaptOptionsFactory(
+                source,
+                (options, serverId: string): PresenceStore =>
+                    new PresenceStore({ ...options.presence, db: options.db, serverId })
+            ),
             inject: [...optionsInject, SERVER_ID],
         },
         {
             provide: CHANGE_STREAM_HUB,
-            useFactory: (...args: any[]): ChangeStreamHub => {
-                const o = opts(args);
-                const registry = args[optionsInject.length] as ConnectionRegistry;
-                return new ChangeStreamHub({
-                    ...o.hub,
-                    ignoreCollections: hubIgnoreCollections(o),
-                    connectedKeys: o.wireHubParking !== false ? registry.connectedKeys : o.hub?.connectedKeys,
-                });
-            },
+            useFactory: adaptOptionsFactory(
+                source,
+                (options, registry: ConnectionRegistry): ChangeStreamHub =>
+                    new ChangeStreamHub({
+                        ...options.hub,
+                        ignoreCollections: hubIgnoreCollections(options),
+                        connectedKeys:
+                            options.wireHubParking !== false ? registry.connectedKeys : options.hub?.connectedKeys,
+                    })
+            ),
             inject: [...optionsInject, CONNECTION_REGISTRY],
         },
         {
