@@ -7,6 +7,7 @@ export default defineConfig({
         'presence/index': 'src/presence/index.ts',
         'socketio/index': 'src/socketio/index.ts',
         'nestjs/index': 'src/nestjs/index.ts',
+        'mongoose/index': 'src/mongoose/index.ts',
     },
     format: ['cjs', 'esm'],
     dts: true,

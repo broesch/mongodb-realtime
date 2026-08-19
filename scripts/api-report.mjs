@@ -1,4 +1,4 @@
-// Generates (or, with --verify, checks) the public-API reports for the four
+// Generates (or, with --verify, checks) the public-API reports for the five
 // subpath entry points. The committed etc/*.api.md files are the reviewable
 // record of the package's surface: a PR that changes them is a PR that
 // changes the public API, and must say so (and bump semver accordingly).
@@ -19,6 +19,7 @@ const entries = [
     { name: 'mongodb-realtime-presence', dts: '.api-tmp/presence/index.d.ts' },
     { name: 'mongodb-realtime-socketio', dts: '.api-tmp/socketio/index.d.ts' },
     { name: 'mongodb-realtime-nestjs', dts: '.api-tmp/nestjs/index.d.ts' },
+    { name: 'mongodb-realtime-mongoose', dts: '.api-tmp/mongoose/index.d.ts' },
 ];
 
 let failed = false;
