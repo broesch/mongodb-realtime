@@ -7,9 +7,10 @@ import type { PushEvents, PushOwnerScopedOptions } from './types.js';
 /**
  * Per-owner fan-out loop. Some entities are scoped to a single recipient,
  * not a whole tenant/organization — the owning user id is resolved via
- * `options.ownerIdOf(event.data)` for changed events, or read directly off
- * `event.ownerId` for removed events (the document is gone on a hard delete,
- * so the watcher must recover the owner from the pre-image). A missing owner
+ * `options.ownerIdOf(event.data)` for changed events, and with
+ * `options.ownerIdOf(event.before)` — the pre-image's owner — for removed
+ * events (0.4+). A removed event without a pre-image falls back to
+ * `event.ownerId` (the conventions' owner field) and logs a warning. A missing owner
  * id is dropped with a warning rather than broadcast — the per-owner
  * analogue of `pushScoped` dropping a removed event missing its `scopeId`.
  *
@@ -31,14 +32,26 @@ export async function pushOwnerScoped<TTenant>(
     for await (const event of watcher) {
         if (event.type === 'removed') {
             if (!events.removed) continue;
-            if (!event.ownerId) {
-                // No owning user on the removed event — the pre-image lacked an
-                // owner field (collMod/pre-image unavailable). Drop rather than
+            // The owner who could see the record until now: the gateway's own
+            // resolver applied to the pre-image, so `removed` reaches the same
+            // room the record's `changed` events did. Without a pre-image,
+            // fall back to the conventions-derived `event.ownerId` and warn.
+            let ownerId: string | null | undefined;
+            if (event.before) {
+                ownerId = options.ownerIdOf(event.before);
+            } else {
+                log.warn(
+                    `No pre-image on ${events.removed} for id=${event.id} — falling back to event.ownerId; enable changeStreamPreAndPostImages on the collection`
+                );
+                ownerId = event.ownerId;
+            }
+            if (!ownerId) {
+                // No owning user for the removed record. Drop rather than
                 // broadcast: a per-owner delete must only ever reach its owner's room.
                 log.warn(`Dropping ${events.removed} for id=${event.id} — no ownerId on the change event`);
                 continue;
             }
-            server.to(roomFor(event, event.ownerId)).emit(events.removed, event.id);
+            server.to(roomFor(event, ownerId)).emit(events.removed, event.id);
         } else {
             const ownerId = options.ownerIdOf(event.data);
             if (!ownerId) {
