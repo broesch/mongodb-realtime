@@ -8,12 +8,12 @@ Multi-node realtime today needs a pub/sub bus so every server process sees every
 
 - **Resumable subscriptions** — `ChangeStreamSubscription` reopens on transient errors with capped exponential backoff, resumes from `startAfter`/`startAtOperationTime`, reclassifies fatal vs. unresumable errors, and parks (no open cursor) while its scope is empty
 - **Cursor reduction** — `ChangeStreamHub` opens one DB-level `db.watch()` per key and demuxes to per-collection consumers, so cursor count drops from O(watchers) to O(keys); optional connection-driven parking with a reconnect grace window
-- **Canonical change events** — `changeDocToEvent` turns a raw change document into a `{ type: 'changed' | 'removed', scopeId, ... }` event under configurable field-name conventions (`scopeField`/`softDeleteField`/`ownerField`), recovering `scopeId`/`ownerId` for hard deletes from the pre-image
+- **Canonical change events** — `changeDocToEvent` turns a raw change document into a `{ type: 'changed' | 'removed', scopeId, ... }` event under configurable field-name conventions (`scopeField`/`softDeleteField`/`ownerField`), recovering `scopeId`/`ownerId` for hard deletes from the pre-image and carrying the whole pre-image as `event.before` on updates, replaces and deletes
 - **Multi-tenant composition** — `watchCollection` + `mergeAsyncGenerators` + per-source `tenant` tagging fan N tenant DBs' watches into one merged, backpressure-bounded stream
 - **Keyed multi-database** — `DbResolver` lets one `ChangeStreamHub`/`PresenceStore`/`RealtimeModule` instance span N databases behind a `key` (one per tenant, per region, per shard — the library doesn't care what the key means); `watchAcrossTargets` is the built-in counterpart of the multi-tenant composition above, fanning N `WatchTarget`s into one merged, tagged stream, optionally sharing a hub cursor per key. A bare `Db` still works everywhere a `DbResolver` is accepted — `toDbResolver` normalises it into a resolver that answers for any key — so this is additive, not a migration
 - **`mongodb-realtime/mongoose` subpath** — `modelTarget`/`watchModel` adapt mongoose models (read structurally, no mongoose dependency, not even a peer) into `WatchTarget`s/`watchAcrossTargets`, for apps built on models rather than driver `Collection`s
 - **Presence** — `PresenceStore` (TTL'd `onlineUsers` collection, atomic check-in with DB-arbitrated race resolution, an app-defined `meta` bag passed through to every event), `ConnectionRegistry` (per-node connected-scope/-key signals), `watchPresence` (cross-node 0→1/1→0 online/offline transition detection, plus a per-connection `activity` event on writes to configurable tracked fields — default `page` — for already-online connections)
-- **Socket.io fan-out** — `pushScoped`, `pushOwnerScoped`, `pushScopedFiltered` (per-recipient permission filtering + two-variant PII rendering), `pushMapped` (consumer picks the event name, payload and room(s) per event, or skips it); shared room-naming helpers so join and emit sites can't disagree — `roomOf`/`pushMapped`'s `rooms` may resolve to several rooms, emitted in one `to()` call so a socket in more than one gets exactly one copy
+- **Socket.io fan-out** — `pushScoped`, `pushOwnerScoped`, `pushScopedFiltered` (per-recipient permission filtering for changes *and* removals, scope-exit eviction, two-variant PII rendering), `pushMapped` (consumer picks the event name, payload and room(s) per event, or skips it); shared room-naming helpers so join and emit sites can't disagree — `roomOf`/`pushMapped`'s `rooms` may resolve to several rooms, emitted in one `to()` call so a socket in more than one gets exactly one copy
 - **NestJS binding** — `RealtimeModule.forRoot/forRootAsync` wires the hub/presence-store/connection-registry/`REALTIME_ENABLED`/`SOCKET_SERVER` behind injection tokens; `ChangeStreamEventPusher` is a lifecycle base whose shutdown latch resolves on either settlement of a subclass's loop — a crash or a normal return — so a pusher can't hang shutdown either way, plus an `enabled` gate and a `watchOne` helper for consumers that need the raw change document; `assertChangeStreamPreflight` fails boot fast with an actionable message on a non-replica-set deployment
 - **Zero runtime dependencies** — `mongodb` is a wide peer (`^5.7 || ^6 || ^7`); `socket.io` and `@nestjs/common` are optional peers. `socket.io` is imported type-only everywhere. `@nestjs/common` is type-only too, **except** `mongodb-realtime/nestjs`'s `nestLogger` helper, which imports `Logger` from it as a value (to construct a default logger when no `impl` is supplied) — importing that subpath without `@nestjs/common` installed throws `MODULE_NOT_FOUND` at load time, not just at the point you call `nestLogger`
 - **Framework-agnostic core** — the engine (`ChangeStreamSubscription`, `ChangeStreamHub`, `watchCollection`) has no socket.io or NestJS dependency; those are opt-in subpaths
@@ -383,7 +383,7 @@ watchCollection({
 });
 ```
 
-A hard delete recovers `scopeId`/`ownerId` from the pre-image (`fullDocumentBeforeChange`) — this is why every entry point (`watchCollection`, `PresenceStore.ensureIndexes`, `assertChangeStreamPreflight`) calls `enablePrePostImages` for you; you don't need to call it yourself.
+A hard delete recovers `scopeId`/`ownerId` from the pre-image (`fullDocumentBeforeChange`), and every `update`, `replace` and `delete` carries that whole pre-image as `event.before` (on `changed` and `removed` events alike; absent on `insert`, and absent when the collection records no pre-images) — this is why every entry point (`watchCollection`, `PresenceStore.ensureIndexes`, `assertChangeStreamPreflight`) calls `enablePrePostImages` for you; you don't need to call it yourself.
 
 Every `changed` event also carries `operation: 'insert' | 'update' | 'replace'` — the change-stream operation that produced it, so a consumer that needs to fan out a different application event for a create than for an edit doesn't have to guess by diffing. An `update` additionally carries `updatedFields`, the top-level and dotted keys written (from `updateDescription.updatedFields`); it's `undefined` on `insert`/`replace`, which write the whole document. **Prefer `didChange(event, field)` over reading `updatedFields` directly** — it treats `insert`/`replace` as having written every field (there's no `updateDescription` to consult, but the effect on the document is the same as if every field had been written) and treats a dotted subpath write (`address.city`) as a write of its parent (`address`); a field that merely shares a prefix (`statusCode` vs. `status`) does not count.
 
@@ -398,6 +398,31 @@ One breaking change: `EntityChanged.operation` and `EntityRemoved.via` are now r
 One breaking change: `PresenceStore.collection`, a property, was replaced by `collectionFor(key?)`, a method. Anywhere your app read `presenceStore.collection` directly (bypassing `checkIn`/`checkOut`/`setPage`/etc., which were already unaffected), call `presenceStore.collectionFor()` instead — omit the argument for the same single-database collection as before. `watchPresence` users are unaffected either way; it always went through the store's methods, never the property.
 
 Everything else in 0.3 is additive: `DbResolver`, `DEFAULT_KEY`, `watchAcrossTargets`, keyed `watchPresence`, `nestLogger`, and the new `mongodb-realtime/mongoose` subpath are all new surface. Every existing single-database call site — a bare `Db` passed to `ChangeStreamHub`, `watchCollection`, `PresenceStore`, or `RealtimeModule` — keeps working unchanged; `toDbResolver` normalises it into a resolver that answers for any key, so nothing about single-database usage requires a code change to pick up 0.3.
+
+## Upgrading to 0.4
+
+No type-level breaking change: `event.before` is a new optional field on `EntityChanged` and `EntityRemoved`, and `evictOnScopeExit` is a new optional option. Consumers that ignore both compile and run unchanged. One **behaviour** change needs a check:
+
+- **`pushScopedFiltered` filters removals.** A `removed` event that carries a pre-image now goes only to the sockets where `canReceive(socket, event.before, prepared)` holds, run inside the socket's tenant context (`runInContext` + `tenantOf`) exactly like a `changed` check; `prepareEvent` runs once on the pre-image to produce `prepared`. Before 0.4 the bare id went to the whole room without consulting `canReceive`. So **your `canReceive` (and `prepareEvent`) must accept a pre-image as well as a post-image** — both are full documents, so a filter that reads the record's own fields usually works as-is. A `canReceive` that denies or throws on a pre-image now leaves the deleted row in that client's list. The payload is still the bare id, whatever `mapData`/`variants` say.
+- **Missing pre-image → the old behaviour plus a warning.** A removal without `event.before` (the collection records no pre-images — a deployment bug, since `watchCollection` enables them) still goes room-wide as the bare id and logs `No pre-image on <event> …`. `pushScoped` logs the same warning; its emit is unchanged.
+- **`pushOwnerScoped` resolves the removal's owner from the pre-image** with your own `ownerIdOf(event.before)`, so a removal reaches the same owner room the record's `changed` events did. Without a pre-image it falls back to `event.ownerId` (the `ownerField` convention) and warns.
+
+New, opt-in: **scope exit** on `pushScopedFiltered`. A record that moves out of a socket's reach (re-homed to another property, scope list narrowed) used to stay in that client's list until a reload. With `evictOnScopeExit`, a `changed` event with a pre-image sends `removed` (the bare id) to each socket in the event's room that passes `canReceive(before)` and fails `canReceive(after)`:
+
+```ts
+await pushScopedFiltered(io, watcher, { changed: 'task:changed', removed: 'task:removed' }, {
+    shutdown,
+    canReceive,                      // the same filter, judged on the pre- and post-image
+    evictOnScopeExit: {
+        // every field the audience depends on, folded into one string
+        audienceKey: doc => [doc.propertyId, doc.buildingId].map(String).join('|'),
+    },
+});
+```
+
+- When `audienceKey(before) === audienceKey(after)` the pass is skipped, so an ordinary edit costs no extra permission checks. Otherwise `canReceive(before)` runs only for sockets that already failed `canReceive(after)` — a socket never receives both `changed` and `removed` for one event.
+- Errors in `audienceKey` or `prepareEvent(before)` are logged and the event is delivered as without the option; a `canReceive` that throws skips that one socket. An update without a pre-image skips eviction with a warning; an `insert` never runs it.
+- `evictOnScopeExit` requires `events.removed` (thrown at call time otherwise).
 
 ## What stays in your app
 

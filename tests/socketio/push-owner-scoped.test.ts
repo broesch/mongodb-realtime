@@ -210,3 +210,82 @@ describe('pushOwnerScoped', () => {
         expect(calls.some(c => c.level === 'error' && c.message.includes('before shutdown'))).toBe(false);
     });
 });
+
+describe('pushOwnerScoped — removed addressed by the pre-image', () => {
+    it("emits the bare id to the pre-image owner's room, resolved with ownerIdOf(before)", async () => {
+        const preImageOwner = await connectClient(port);
+        const conventionOwner = await connectClient(port);
+        await joinRoom(preImageOwner, userRoom('user-from-before'));
+        await joinRoom(conventionOwner, userRoom('user-from-convention'));
+        const preEvents = receivedEvents(preImageOwner, 'doc:removed');
+        const convEvents = receivedEvents(conventionOwner, 'doc:removed');
+        const { logger, calls } = mockLogger();
+
+        // `ownerIdOf` reads `ownerId`; the conventions-derived `event.ownerId`
+        // points elsewhere. The gateway's own resolver wins, so removed and
+        // changed reach the same room.
+        const event: ChangeEvent = {
+            type: 'removed',
+            id: 'entity-1',
+            ownerId: 'user-from-convention',
+            via: 'delete',
+            before: { _id: 'entity-1', ownerId: 'user-from-before' },
+        };
+        await pushOwnerScoped(
+            server,
+            gen([event]),
+            { changed: 'doc:changed', removed: 'doc:removed' },
+            { shutdown: new ValueSignal(true), ownerIdOf, logger }
+        );
+
+        await waitForCount(preEvents, 1);
+        await delay(150);
+        expect(preEvents).toEqual(['entity-1']);
+        expect(convEvents).toHaveLength(0);
+        expect(calls.filter(c => c.level === 'warn')).toHaveLength(0);
+    });
+
+    it('without a pre-image falls back to event.ownerId and logs a warning', async () => {
+        const client = await connectClient(port);
+        await joinRoom(client, userRoom('user-1'));
+        const removedEvents = receivedEvents(client, 'doc:removed');
+        const { logger, calls } = mockLogger();
+
+        const event: ChangeEvent = { type: 'removed', id: 'entity-1', ownerId: 'user-1', via: 'softDelete' };
+        await pushOwnerScoped(
+            server,
+            gen([event]),
+            { changed: 'doc:changed', removed: 'doc:removed' },
+            { shutdown: new ValueSignal(true), ownerIdOf, logger }
+        );
+
+        await waitForCount(removedEvents, 1);
+        expect(removedEvents[0]).toBe('entity-1');
+        expect(calls.some(c => c.level === 'warn' && /pre-image/.test(c.message))).toBe(true);
+    });
+
+    it('a pre-image whose ownerIdOf resolves nothing is dropped with a warning (never broadcast)', async () => {
+        const client = await connectClient(port);
+        await joinRoom(client, userRoom('user-1'));
+        const removedEvents = receivedEvents(client, 'doc:removed');
+        const { logger, calls } = mockLogger();
+
+        const event: ChangeEvent = {
+            type: 'removed',
+            id: 'entity-1',
+            ownerId: 'user-1',
+            via: 'delete',
+            before: { _id: 'entity-1' },
+        };
+        await pushOwnerScoped(
+            server,
+            gen([event]),
+            { changed: 'doc:changed', removed: 'doc:removed' },
+            { shutdown: new ValueSignal(true), ownerIdOf, logger }
+        );
+
+        await delay(200);
+        expect(removedEvents).toHaveLength(0);
+        expect(calls.some(c => c.level === 'warn' && c.message.includes('ownerId'))).toBe(true);
+    });
+});

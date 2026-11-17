@@ -228,3 +228,61 @@ describe('pushScoped', () => {
         expect(calls.some(c => c.level === 'warn' && c.message.includes('no rooms'))).toBe(true);
     });
 });
+
+describe('pushScoped — removed and the pre-image', () => {
+    it('with a pre-image: the bare id goes to the room, no warning, and roomOf sees event.before', async () => {
+        const oldRoom = await connectClient(port);
+        const otherRoom = await connectClient(port);
+        await joinRoom(oldRoom, 'property:p1');
+        await joinRoom(otherRoom, 'property:p2');
+        const oldEvents = receivedEvents(oldRoom, 'doc:removed');
+        const otherEvents = receivedEvents(otherRoom, 'doc:removed');
+        const { logger, calls } = mockLogger();
+
+        const event: ChangeEvent = {
+            type: 'removed',
+            id: 'entity-1',
+            scopeId: 'scope-1',
+            via: 'delete',
+            before: { _id: 'entity-1', propertyId: 'p1' },
+        };
+        await pushScoped(
+            server,
+            gen([event]),
+            { changed: 'doc:changed', removed: 'doc:removed' },
+            {
+                shutdown: new ValueSignal(true),
+                logger,
+                // A per-property room picked from the pre-image: who could see it until now.
+                roomOf: e => (e.type === 'removed' ? `property:${String(e.before?.propertyId)}` : scopeRoom(e.scopeId)),
+            }
+        );
+
+        await waitForCount(oldEvents, 1);
+        await delay(150);
+        expect(oldEvents).toEqual(['entity-1']);
+        expect(otherEvents).toHaveLength(0);
+        expect(calls.filter(c => c.level === 'warn')).toHaveLength(0);
+    });
+
+    it('without a pre-image: the bare id still goes to the scope room, and a warning is logged', async () => {
+        const client = await connectClient(port);
+        await joinRoom(client, scopeRoom('scope-1'));
+        const removedEvents = receivedEvents(client, 'doc:removed');
+        const { logger, calls } = mockLogger();
+
+        const event: ChangeEvent = { type: 'removed', id: 'entity-1', scopeId: 'scope-1', via: 'delete' };
+        await pushScoped(
+            server,
+            gen([event]),
+            { changed: 'doc:changed', removed: 'doc:removed' },
+            { shutdown: new ValueSignal(true), logger }
+        );
+
+        await waitForCount(removedEvents, 1);
+        expect(removedEvents[0]).toBe('entity-1');
+        const warnings = calls.filter(c => c.level === 'warn');
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0].message).toMatch(/pre-image/);
+    });
+});

@@ -3,6 +3,7 @@ import type { Db } from 'mongodb';
 import type { Logger } from '../../src/common/logger.js';
 import { startReplSet, stopReplSet, uniqueCollection } from '../helpers/replset.js';
 import { enablePrePostImages, __resetPrePostImageCacheForTest } from '../../src/core/enable-pre-post-images.js';
+import { streamStart } from '../helpers/stream-start.js';
 
 /**
  * Fake `Db` whose `command` (the `collMod` call) rejects on its first
@@ -55,7 +56,12 @@ describe('enablePrePostImages', () => {
         await enablePrePostImages(db, [name]);
         const coll = db.collection(name);
         const { insertedId } = await coll.insertOne({ organizationId: 'org1' });
-        const stream = coll.watch([], { fullDocumentBeforeChange: 'whenAvailable' });
+        // Start before the delete, so a slow cursor open cannot miss it. The
+        // start time is inclusive and may replay the insert: watch deletes only.
+        const stream = coll.watch([{ $match: { operationType: 'delete' } }], {
+            fullDocumentBeforeChange: 'whenAvailable',
+            startAtOperationTime: await streamStart(db),
+        });
         const nextPromise = stream.next();
         await coll.deleteOne({ _id: insertedId });
         const change = await nextPromise;

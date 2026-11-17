@@ -1,6 +1,6 @@
 {
   "name": "mongodb-realtime",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MongoDB change-stream realtime infrastructure: resumable subscriptions, per-key watch hubs, presence, and socket.io fan-out — multi-node without Redis",
   "type": "module",
   "license": "MIT",

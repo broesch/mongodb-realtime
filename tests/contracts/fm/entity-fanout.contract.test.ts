@@ -199,10 +199,11 @@ describe('fm entity fan-out contract', () => {
         ).rejects.toThrow(/mutually exclusive/);
     });
 
-    it('emits a removed event to the whole room without consulting canReceive', async () => {
-        // fm relies on this: a delete carries no document, so a scope-derived
-        // canReceive would deny every recipient and the deleted row would
-        // linger in their lists until a refresh.
+    it('without a pre-image, emits a removed event to the whole room without consulting canReceive', async () => {
+        // The 0.4 fallback (fm owner answer Q3): a delete with no pre-image
+        // carries no document, so a scope-derived canReceive would deny every
+        // recipient and the deleted row would linger in their lists until a
+        // refresh. The bare id goes room-wide instead, with a warning.
         const client = await connectClient(port);
         await joinRoomWithData(client, ORG_ROOM, { tenant: TENANT });
         const events = receivedEvents(client, 'thing:removed');
@@ -225,6 +226,48 @@ describe('fm entity fan-out contract', () => {
         await waitForCount(events, 1);
         expect(events).toEqual(['42']);
         expect(canReceiveCalls).toBe(0);
+    });
+
+    it('with a pre-image, a removed event reaches only sockets whose canReceive accepts the pre-image, in their tenant context', async () => {
+        // fm package 2 relies on this: its gateways' canReceive is reused
+        // unchanged on the pre-image to decide who gets the bare id.
+        const sees = await connectClient(port);
+        const doesNot = await connectClient(port);
+        await joinRoomWithData(sees, ORG_ROOM, { tenant: TENANT, properties: ['p1'] });
+        await joinRoomWithData(doesNot, ORG_ROOM, { tenant: TENANT, properties: ['p2'] });
+        const seesEvents = receivedEvents(sees, 'thing:removed');
+        const doesNotEvents = receivedEvents(doesNot, 'thing:removed');
+
+        const contexts: unknown[] = [];
+        await pushScopedFiltered<Tenant>(
+            server,
+            gen([
+                {
+                    type: 'removed',
+                    id: '42',
+                    scopeId: ORG,
+                    via: 'delete',
+                    tenant: TENANT,
+                    before: { _id: '42', organizationId: ORG, propertyId: 'p1' },
+                },
+            ]),
+            { changed: 'thing:changed', removed: 'thing:removed' },
+            {
+                shutdown: new ValueSignal(true),
+                ...tenantFanout(contexts),
+                canReceive: (socket, data) =>
+                    ((socket.data as { properties: string[] }).properties ?? []).includes(
+                        (data as { propertyId: string }).propertyId
+                    ),
+            }
+        );
+
+        await waitForCount(seesEvents, 1);
+        await delay(150);
+        expect(seesEvents).toEqual(['42']);
+        expect(doesNotEvents).toHaveLength(0);
+        // One event-tenant context (prepareEvent block) + one per socket.
+        expect(contexts).toEqual([TENANT, TENANT, TENANT]);
     });
 
     it('routes per-owner events by ownerIdOf, and removals by event.ownerId', async () => {

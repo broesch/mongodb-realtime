@@ -174,6 +174,44 @@ describe('watchCollection', () => {
             expect(result.done).toBe(true);
         });
 
+        it('carries the pre-image as event.before on update and hard delete', async () => {
+            const { db } = await startReplSet();
+            const name = uniqueCollection('direct-pre-image');
+            const coll = db.collection(name);
+            const shutdown = new ValueSignal(false);
+
+            const tracked = trackNext(
+                watchCollection({
+                    source: { watch: collectionWatchFactory(coll), db, collection: name },
+                    shutdown,
+                })
+            );
+            await waitForWatchOpen(tracked, coll);
+
+            const { insertedId } = await coll.insertOne({ organizationId: 'org-1', propertyId: 'p1' });
+            const inserted = await expectEvent(tracked);
+            expect(inserted).not.toHaveProperty('before');
+
+            await coll.updateOne({ _id: insertedId }, { $set: { propertyId: 'p2' } });
+            const updated = await expectEvent(tracked);
+            expect(updated).toMatchObject({
+                type: 'changed',
+                operation: 'update',
+                data: { propertyId: 'p2' },
+                before: { _id: insertedId, organizationId: 'org-1', propertyId: 'p1' },
+            });
+
+            await coll.deleteOne({ _id: insertedId });
+            const removed = await expectEvent(tracked);
+            expect(removed).toMatchObject({
+                type: 'removed',
+                via: 'delete',
+                before: { _id: insertedId, organizationId: 'org-1', propertyId: 'p2' },
+            });
+
+            shutdown.next(true);
+        });
+
         it('carries operation and updatedFields through to the yielded ChangeEvent', async () => {
             const { db } = await startReplSet();
             const name = uniqueCollection('direct-operation-fields');

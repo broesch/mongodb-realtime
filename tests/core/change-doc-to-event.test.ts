@@ -60,6 +60,7 @@ describe('changeDocToEvent', () => {
             scopeId: 'org1',
             ownerId: 'u1',
             via: 'delete',
+            before: { organizationId: { toString: expect.any(Function) }, userId: { toString: expect.any(Function) } },
         });
     });
 
@@ -240,5 +241,83 @@ describe('didChange', () => {
 
     it('is false for removed events, which wrote no fields', () => {
         expect(didChange({ type: 'removed', id: 'x', via: 'delete' }, 'status')).toBe(false);
+    });
+});
+
+describe('changeDocToEvent — pre-image as event.before', () => {
+    const before = { _id: 'id1', organizationId: 'org1', userId: 'u1', propertyId: 'p-old' };
+
+    it('update carries fullDocumentBeforeChange as before', () => {
+        const fullDocument = { _id: 'id1', organizationId: 'org1', propertyId: 'p-new' };
+        const change = {
+            operationType: 'update',
+            fullDocument,
+            fullDocumentBeforeChange: before,
+            updateDescription: { updatedFields: { propertyId: 'p-new' } },
+        } as unknown as ChangeStreamDocument;
+
+        expect(changeDocToEvent(change)).toMatchObject({ type: 'changed', data: fullDocument, before });
+    });
+
+    it('replace carries fullDocumentBeforeChange as before', () => {
+        const change = {
+            operationType: 'replace',
+            fullDocument: { _id: 'id1', organizationId: 'org1' },
+            fullDocumentBeforeChange: before,
+        } as unknown as ChangeStreamDocument;
+
+        expect((changeDocToEvent(change) as EntityChanged).before).toBe(before);
+    });
+
+    it('hard delete carries the whole pre-image as before, not only scopeId/ownerId', () => {
+        const change = {
+            operationType: 'delete',
+            documentKey: { _id: 'id1' },
+            fullDocumentBeforeChange: before,
+        } as unknown as ChangeStreamDocument;
+
+        expect(changeDocToEvent(change)).toEqual({
+            type: 'removed',
+            id: 'id1',
+            scopeId: 'org1',
+            ownerId: 'u1',
+            via: 'delete',
+            before,
+        });
+    });
+
+    it('soft delete carries the pre-image (the state before the deleted flag was set) as before', () => {
+        const change = {
+            operationType: 'update',
+            fullDocument: { _id: 'id1', organizationId: 'org1', userId: 'u1', deleted: true },
+            fullDocumentBeforeChange: before,
+        } as unknown as ChangeStreamDocument;
+
+        expect(changeDocToEvent(change)).toMatchObject({ type: 'removed', via: 'softDelete', before });
+    });
+
+    it('insert has no before key at all', () => {
+        const change = {
+            operationType: 'insert',
+            fullDocument: { _id: 'id1', organizationId: 'org1' },
+        } as unknown as ChangeStreamDocument;
+
+        expect(changeDocToEvent(change)).not.toHaveProperty('before');
+    });
+
+    it('an update or delete without a pre-image (null or absent) has no before key', () => {
+        const update = {
+            operationType: 'update',
+            fullDocument: { _id: 'id1', organizationId: 'org1' },
+            fullDocumentBeforeChange: null,
+        } as unknown as ChangeStreamDocument;
+        const hard = {
+            operationType: 'delete',
+            documentKey: { _id: 'id1' },
+            fullDocumentBeforeChange: null,
+        } as unknown as ChangeStreamDocument;
+
+        expect(changeDocToEvent(update)).not.toHaveProperty('before');
+        expect(changeDocToEvent(hard)).not.toHaveProperty('before');
     });
 });
