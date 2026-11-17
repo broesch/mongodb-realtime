@@ -47,7 +47,19 @@ import type { PushEvents, PushScopedFilteredOptions } from './types.js';
  * selects. `canReceive` still runs FIRST and unchanged — a socket that fails
  * it gets nothing, regardless of variant. MUTUALLY EXCLUSIVE with `mapData`
  * (asserted below): a caller renders EITHER one payload for everyone OR the
- * two-variant pair. The `removed` (bare-id) path is unaffected.
+ * two-variant pair. The `removed` payload is always the bare id.
+ *
+ * Removals (0.4+). A `removed` event is delivered per socket too: `canReceive`
+ * judges the PRE-IMAGE (`event.before`) — who could see the record until now —
+ * inside the socket's tenant context, with `prepareEvent(before)` as its 3rd
+ * argument. An event without a pre-image (the collection records none, a
+ * deployment bug) falls back to the pre-0.4 behaviour, the bare id to the
+ * whole room, and logs a warning. `canReceive` must therefore accept a
+ * pre-image as well as a post-image; both are full documents.
+ *
+ * Scope exit (`evictOnScopeExit`, 0.4+): a socket that could see the record
+ * before an update and cannot after receives `removed` with the bare id. See
+ * `EvictOnScopeExit`.
  *
  * Free function, no lifecycle: same contract as `pushScoped`.
  */
@@ -63,6 +75,11 @@ export async function pushScopedFiltered<TTenant>(
         // preferring one path. Checked before the watcher is ever touched.
         throw new Error(
             'pushScopedFiltered: `mapData` and `variants` are mutually exclusive — pass one or the other, not both'
+        );
+    }
+    if (options.evictOnScopeExit && !events.removed) {
+        throw new Error(
+            'pushScopedFiltered: `evictOnScopeExit` needs `events.removed` — the event a client drops a row on'
         );
     }
     const log = prefixed(options.logger ?? consoleLogger, options.name ?? 'pushScopedFiltered');
@@ -82,25 +99,114 @@ export async function pushScopedFiltered<TTenant>(
         return rooms;
     };
 
+    // The per-recipient context: `canReceive` runs inside a context seeded
+    // from the SOCKET's tenant when both hooks are supplied, else directly.
+    const inSocketContext = <R>(remote: RemoteSocket<never, unknown>, fn: () => Promise<R>): Promise<R> =>
+        options.runInContext && options.tenantOf
+            ? options.runInContext({ tenant: options.tenantOf(remote) }, fn)
+            : fn();
+    // The once-per-event context, seeded from the EVENT's tenant.
+    const inEventContext = <R>(event: ChangeEvent<TTenant>, fn: () => Promise<R>): Promise<R> =>
+        options.runInContext ? options.runInContext({ tenant: event.tenant }, fn) : fn();
+    const prepare = async (data: unknown): Promise<unknown> =>
+        options.prepareEvent ? await Promise.resolve(options.prepareEvent(data)) : undefined;
+    const errorText = (err: unknown): string => (err as Error)?.message ?? String(err);
+    // socket.io's `fetchSockets` returns `RemoteSocket`, a subset of `Socket`
+    // — the hooks only need `socket.data` and `socket.id`. Cast at the
+    // boundary rather than threading the concrete `Server`'s generic types
+    // through every option.
+    const asRemote = (socket: unknown): RemoteSocket<never, unknown> => socket as RemoteSocket<never, unknown>;
+
+    /**
+     * A removal reaches the sockets that could see the record until now:
+     * `canReceive` judges the PRE-IMAGE (`event.before`). The payload is the
+     * bare id, whatever `mapData`/`variants` say. Without a pre-image (the
+     * collection records none — a deployment bug) the bare id goes to the
+     * whole room, as before 0.4, with a warning.
+     */
+    const pushRemoved = async (event: Extract<ChangeEvent<TTenant>, { type: 'removed' }>, removed: string) => {
+        if (!event.scopeId) {
+            // Pre/post images weren't available for this delete (collMod
+            // failed or unsupported). Best effort: don't leak across
+            // scopes — drop the notification rather than broadcast globally.
+            log.warn(`Dropping ${removed} for id=${event.id} — no scopeId on the change event`);
+            return;
+        }
+        const rooms = roomsFor(event, removed);
+        if (!rooms) return;
+        const before = event.before;
+        if (!before) {
+            log.warn(
+                `No pre-image on ${removed} for id=${event.id} — emitting the bare id to the whole room. ` +
+                    'Enable changeStreamPreAndPostImages on the collection so removals reach only sockets that could see the record.'
+            );
+            server.to(rooms).emit(removed, event.id);
+            return;
+        }
+        let prepared: unknown;
+        try {
+            prepared = await inEventContext(event, () => prepare(before));
+        } catch (err) {
+            // Fail closed, like a failing `prepareEvent` on a changed event.
+            log.error(`prepareEvent failed for ${removed} id=${event.id} — skipping emit: ${errorText(err)}`);
+            return;
+        }
+        const sockets = await server.in(rooms).fetchSockets();
+        await Promise.all(
+            sockets.map(async socket => {
+                const remote = asRemote(socket);
+                try {
+                    const sawIt = await inSocketContext(remote, () =>
+                        Promise.resolve(options.canReceive(remote, before, prepared))
+                    );
+                    if (sawIt) socket.emit(removed, event.id);
+                } catch (err) {
+                    log.warn(`canReceive check failed for socket ${socket.id} (${removed}): ${errorText(err)}`);
+                }
+            })
+        );
+    };
+
+    /**
+     * Resolves the scope-exit pass for a changed event: `undefined` when the
+     * option is off, the event is an insert, there is no pre-image, the
+     * audience key did not change, or resolving it failed (logged). Never
+     * throws — the changed event goes out regardless.
+     */
+    const scopeExitFor = async (
+        event: Extract<ChangeEvent<TTenant>, { type: 'changed' }>
+    ): Promise<{ before: Record<string, unknown>; prepared: unknown; id: string } | undefined> => {
+        const spec = options.evictOnScopeExit;
+        if (!spec || event.operation === 'insert') return undefined;
+        const before = event.before;
+        if (!before) {
+            log.warn(
+                `No pre-image on ${events.changed} (${event.operation}) — scope-exit eviction skipped. ` +
+                    'Enable changeStreamPreAndPostImages on the collection.'
+            );
+            return undefined;
+        }
+        try {
+            const after = event.data as Record<string, unknown>;
+            if (spec.audienceKey(before) === spec.audienceKey(after)) return undefined;
+            const id = (after._id as { toString(): string } | null | undefined)?.toString();
+            if (!id) {
+                log.warn(`scope-exit eviction skipped for ${events.changed}: the document has no _id`);
+                return undefined;
+            }
+            // The pre-image is judged with ITS OWN prepared value — the
+            // post-image's (e.g. a resolved hierarchy scope) would be wrong.
+            const prepared = await inEventContext(event, () => prepare(before));
+            return { before, prepared, id };
+        } catch (err) {
+            log.warn(`scope-exit eviction skipped for ${events.changed}: ${errorText(err)}`);
+            return undefined;
+        }
+    };
+
     for await (const event of watcher) {
         if (event.type === 'removed') {
-            if (!events.removed) continue;
-            if (!event.scopeId) {
-                // Pre/post images weren't available for this delete (collMod
-                // failed or unsupported). Best effort: don't leak across
-                // scopes — drop the notification rather than broadcast globally.
-                log.warn(`Dropping ${events.removed} for id=${event.id} — no scopeId on the change event`);
-                continue;
-            }
-            // Removed events carry no document, so the per-recipient
-            // `canReceive` filter below cannot run: it derives its decision
-            // from the document's fields, which are absent on a delete.
-            // Emit the bare id to the whole room instead — exactly like
-            // `pushScoped`'s removed path: an id leaks no entity data, and
-            // any client holding the entity drops it.
-            const rooms = roomsFor(event, events.removed);
-            if (!rooms) continue;
-            server.to(rooms).emit(events.removed, event.id);
+            if (events.removed) await pushRemoved(event, events.removed);
             continue;
         }
 
@@ -121,7 +227,7 @@ export async function pushScopedFiltered<TTenant>(
         // each recipient later picks full-or-redacted from this single pair.
         let rendered: { full: unknown; redacted: unknown } | undefined;
         try {
-            const runOnce = async (): Promise<void> => {
+            await inEventContext(event, async () => {
                 if (options.variants) {
                     // Render both variants once. `payload` stays unused on
                     // this path; the per-socket loop reads `rendered` via
@@ -134,40 +240,30 @@ export async function pushScopedFiltered<TTenant>(
                 // Left `undefined` when no `prepareEvent` is supplied so
                 // existing `canReceive` callbacks (which ignore the 3rd arg)
                 // are unaffected.
-                if (options.prepareEvent) {
-                    prepared = await Promise.resolve(options.prepareEvent(event.data));
-                }
-            };
-            if (options.runInContext) {
-                await options.runInContext({ tenant: event.tenant }, runOnce);
-            } else {
-                await runOnce();
-            }
+                prepared = await prepare(event.data);
+            });
         } catch (err) {
-            log.error(
-                `mapData failed for ${events.changed} event — skipping emit: ${(err as Error)?.message ?? String(err)}`
-            );
+            log.error(`mapData failed for ${events.changed} event — skipping emit: ${errorText(err)}`);
             continue;
         }
         const eventData = event.data;
+        const exit = await scopeExitFor(event);
 
         await Promise.all(
             sockets.map(async socket => {
+                const remote = asRemote(socket);
                 try {
-                    // socket.io's `fetchSockets` returns `RemoteSocket`, a
-                    // subset of `Socket` — the hooks only need `socket.data`
-                    // and `socket.id`. Cast at the boundary rather than
-                    // threading the concrete `Server`'s generic types through
-                    // every option.
-                    const remote = socket as unknown as RemoteSocket<never, unknown>;
-                    const check = (): Promise<boolean> =>
-                        Promise.resolve(options.canReceive(remote, eventData, prepared));
-                    const tenant = options.tenantOf?.(remote);
-                    const allowed =
-                        options.runInContext && options.tenantOf
-                            ? await options.runInContext({ tenant }, check)
-                            : await check();
-                    if (allowed) {
+                    // One socket context for both checks. A socket that may
+                    // see the new state gets `changed`; only one that may NOT
+                    // is asked about the old state — so it never gets both.
+                    const outcome = await inSocketContext(remote, async () => {
+                        if (await Promise.resolve(options.canReceive(remote, eventData, prepared))) return 'changed';
+                        if (exit && (await Promise.resolve(options.canReceive(remote, exit.before, exit.prepared)))) {
+                            return 'removed';
+                        }
+                        return undefined;
+                    });
+                    if (outcome === 'changed') {
                         // Two-variant path: the gate passed, now pick
                         // full-vs-redacted from the single pre-rendered pair
                         // (synchronous room test, no async work in the hot
@@ -181,13 +277,14 @@ export async function pushScopedFiltered<TTenant>(
                         } else {
                             socket.emit(events.changed, payload);
                         }
+                    } else if (outcome === 'removed') {
+                        // `scopeExitFor` only resolves when `events.removed` is set (asserted at call time).
+                        socket.emit(events.removed!, exit!.id);
                     }
                 } catch (err) {
                     // Permission-check failures must never block the fan-out
                     // loop. Log and skip this recipient.
-                    log.warn(
-                        `canReceive check failed for socket ${socket.id}: ${(err as Error)?.message ?? String(err)}`
-                    );
+                    log.warn(`canReceive check failed for socket ${socket.id}: ${errorText(err)}`);
                 }
             })
         );

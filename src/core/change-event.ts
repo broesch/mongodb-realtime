@@ -26,6 +26,14 @@ export interface EntityChanged<TTenant = unknown> {
      * over reading this directly, so that case is handled correctly.
      */
     updatedFields?: string[];
+    /**
+     * The document as it was before this write (the change document's
+     * `fullDocumentBeforeChange`), on `update` and `replace`. Absent on
+     * `insert`, and absent whenever the collection records no pre-images —
+     * consumers must treat it as optional. `pushScopedFiltered`'s
+     * `evictOnScopeExit` reads it to tell who lost sight of the record.
+     */
+    before?: Record<string, unknown>;
     tenant?: TTenant;
 }
 
@@ -50,6 +58,16 @@ export interface EntityRemoved<TTenant = unknown> {
      * removal handling should de-duplicate by `id`.
      */
     via: 'delete' | 'softDelete';
+    /**
+     * The document as it was before the removal (the change document's
+     * `fullDocumentBeforeChange`): the deleted document on a hard delete, the
+     * document before the soft-delete flag was set on a soft delete. It
+     * decides who receives the `removed` emit in `pushScopedFiltered` (and
+     * whose room in `pushOwnerScoped`). Absent when the collection records no
+     * pre-images, which is a deployment bug: the fan-out loops then fall back
+     * to the pre-0.4 room-wide emit and log a warning.
+     */
+    before?: Record<string, unknown>;
     tenant?: TTenant;
 }
 

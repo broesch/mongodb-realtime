@@ -15,6 +15,7 @@ export type ChangeOperation = 'insert' | 'update' | 'replace';
 
 // @public (undocumented)
 export interface EntityChanged<TTenant = unknown> {
+    before?: Record<string, unknown>;
     data: unknown;
     operation: ChangeOperation;
     scopeId: string;
@@ -27,6 +28,7 @@ export interface EntityChanged<TTenant = unknown> {
 
 // @public (undocumented)
 export interface EntityRemoved<TTenant = unknown> {
+    before?: Record<string, unknown>;
     // (undocumented)
     id: string;
     ownerId?: string;
@@ -36,6 +38,11 @@ export interface EntityRemoved<TTenant = unknown> {
     // (undocumented)
     type: 'removed';
     via: 'delete' | 'softDelete';
+}
+
+// @public
+export interface EvictOnScopeExit {
+    audienceKey: (record: Record<string, unknown>) => string;
 }
 
 // @public
@@ -108,6 +115,7 @@ export function pushScopedFiltered<TTenant>(server: Server, watcher: AsyncGenera
 // @public (undocumented)
 export interface PushScopedFilteredOptions<TTenant> extends PushScopedOptions<TTenant> {
     canReceive: (socket: RemoteSocket<never, unknown>, data: unknown, prepared?: unknown) => boolean | Promise<boolean>;
+    evictOnScopeExit?: EvictOnScopeExit;
     prepareEvent?: (data: unknown) => unknown;
     runInContext?: <R>(ctx: {
         tenant?: unknown;

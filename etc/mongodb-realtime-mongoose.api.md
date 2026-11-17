@@ -39,6 +39,7 @@ export interface ChangeStreamHubOptions {
 
 // @public (undocumented)
 export interface EntityChanged<TTenant = unknown> {
+    before?: Record<string, unknown>;
     data: unknown;
     operation: ChangeOperation;
     scopeId: string;
@@ -51,6 +52,7 @@ export interface EntityChanged<TTenant = unknown> {
 
 // @public (undocumented)
 export interface EntityRemoved<TTenant = unknown> {
+    before?: Record<string, unknown>;
     // (undocumented)
     id: string;
     ownerId?: string;

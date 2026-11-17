@@ -12,6 +12,18 @@ function toStr(value: unknown): string | undefined {
 }
 
 /**
+ * `{ before }` when the change document carries a pre-image, else `{}` — so an
+ * event without one has no `before` key at all (not `before: undefined`), and
+ * consumers comparing events structurally see exactly the pre-0.4 shape.
+ */
+function preImage(change: ChangeStreamDocument): { before?: Record<string, unknown> } {
+    // Only update/replace/delete documents declare the field; an insert has
+    // no "before".
+    const before = 'fullDocumentBeforeChange' in change ? change.fullDocumentBeforeChange : undefined;
+    return before ? { before } : {};
+}
+
+/**
  * Maps a raw MongoDB change-stream document to a canonical `ChangeEvent`, or
  * returns `null` when the event should be skipped (a non-delete change with
  * no scope field, or an operation type that carries no document data, e.g.
@@ -23,6 +35,13 @@ function toStr(value: unknown): string | undefined {
  * pactsheet.fm's `changeDocToEvent`, generalized with configurable field
  * conventions and renamed fields (`organizationId` → `scopeId`, `userId` →
  * `ownerId`).
+ *
+ * The change document's `fullDocumentBeforeChange` (present when the
+ * collection records pre-images and the stream asks for them, which
+ * `watchCollection` and the hub both do) travels on the event as `before`,
+ * for `update`, `replace` and `delete` — on `changed` and `removed` events
+ * alike. The fan-out loops use it to address a removal to whoever could see
+ * the record until now, and to detect a record leaving a socket's reach.
  */
 export function changeDocToEvent(
     change: ChangeStreamDocument,
@@ -38,6 +57,7 @@ export function changeDocToEvent(
             scopeId: toStr(before?.[conv.scopeField]),
             ownerId: toStr(before?.[conv.ownerField]),
             via: 'delete',
+            ...preImage(change),
         };
     }
 
@@ -58,6 +78,7 @@ export function changeDocToEvent(
             scopeId,
             ownerId: toStr(doc[conv.ownerField]),
             via: 'softDelete',
+            ...preImage(change),
         };
     }
 
@@ -67,5 +88,12 @@ export function changeDocToEvent(
     const updatedFields =
         change.operationType === 'update' ? Object.keys(change.updateDescription?.updatedFields ?? {}) : undefined;
 
-    return { type: 'changed', scopeId, data: doc, operation: change.operationType, updatedFields };
+    return {
+        type: 'changed',
+        scopeId,
+        data: doc,
+        operation: change.operationType,
+        updatedFields,
+        ...preImage(change),
+    };
 }

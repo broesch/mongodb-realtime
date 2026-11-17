@@ -100,6 +100,40 @@ export interface PushScopedFilteredOptions<TTenant> extends PushScopedOptions<TT
     runInContext?: <R>(ctx: { tenant?: unknown }, fn: () => Promise<R>) => Promise<R>;
     /** Resolves a connected socket's tenant, for seeding its `canReceive` context via `runInContext`. */
     tenantOf?: (socket: RemoteSocket<never, unknown>) => unknown;
+    /**
+     * Scope exit: on a `changed` event that carries a pre-image
+     * (`event.before`), send `events.removed` (the bare id) to every socket in
+     * the event's room that could see the record before the write and cannot
+     * see it after — `canReceive(before) && !canReceive(after)`. Without it, a
+     * record that moves out of a socket's reach stays in that client's list
+     * until a reload. Requires `events.removed` (asserted at call time).
+     * See {@link EvictOnScopeExit}.
+     */
+    evictOnScopeExit?: EvictOnScopeExit;
+}
+
+/**
+ * Options for `pushScopedFiltered`'s scope-exit eviction.
+ *
+ * Cost: the extra `canReceive(before)` check runs only when
+ * `audienceKey(before) !== audienceKey(after)`, and only for sockets that
+ * fail `canReceive(after)` — so a socket never receives both `changed` and
+ * `removed` for one event, and an ordinary edit costs nothing extra.
+ * `prepareEvent` (when supplied) runs once more for the pre-image, so the
+ * pre-image is judged with its own prepared value.
+ *
+ * Errors in `audienceKey` or in `prepareEvent(before)` are logged; the event
+ * is then delivered exactly as without this option. An update without a
+ * pre-image skips eviction with a warning (the collection records no
+ * pre-images); an `insert` never runs it.
+ */
+export interface EvictOnScopeExit {
+    /**
+     * Every field the audience depends on, folded into one string (e.g. the
+     * property, building and scope ids). Called with the pre-image and with
+     * the new document; equal keys mean the audience cannot have changed.
+     */
+    audienceKey: (record: Record<string, unknown>) => string;
 }
 
 /** What {@link pushMapped}'s selector asks the loop to emit for one change event. */
